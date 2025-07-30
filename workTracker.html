@@ -171,7 +171,6 @@
                     const docRef = await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
                     console.log("Work log saved with ID: ", docRef.id);
                     if (logData.isLive) {
-                        // FIX: Use getTime() for JS Date objects, not toMillis()
                         setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.getTime() });
                     }
                     setWorkLogModalOpen(false);
@@ -188,6 +187,28 @@
                 setLiveTimer(null);
             };
             
+            // FIX: Custom date parser for DD/MM/YYYY format
+            const parseCustomDate = (dateStr, timeStr) => {
+                if (!dateStr || !timeStr) return null;
+                const dateParts = dateStr.split('/'); // Expects [DD, MM, YYYY]
+                const timeParts = timeStr.split(':'); // Expects [HH, MM, SS]
+                if (dateParts.length !== 3 || timeParts.length !== 3) return null;
+
+                const day = parseInt(dateParts[0], 10);
+                const month = parseInt(dateParts[1], 10) - 1; // JS months are 0-indexed
+                const year = parseInt(dateParts[2], 10);
+                const hours = parseInt(timeParts[0], 10);
+                const minutes = parseInt(timeParts[1], 10);
+                const seconds = parseInt(timeParts[2], 10);
+
+                const date = new Date(year, month, day, hours, minutes, seconds);
+                // Check if the constructed date is valid
+                if (isNaN(date.getTime())) {
+                    return null;
+                }
+                return date;
+            };
+
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -197,21 +218,31 @@
                     skipEmptyLines: true,
                     complete: async (results) => {
                         const records = results.data;
+                        let invalidCount = 0;
                         alert(`Found ${records.length} records. Uploading to Firestore...`);
                         
                         for (const record of records) {
+                            const startTime = parseCustomDate(record['Start Date'], record['Start Time']);
+                            const endTime = parseCustomDate(record['End Date'], record['End Time']);
+
+                            if (!startTime || !endTime) {
+                                console.warn('Skipping invalid record due to date format issue:', record);
+                                invalidCount++;
+                                continue; // Skip this record
+                            }
+
                             const logData = {
                                 project: record.Project || 'N/A',
                                 ticketLink: record.Task || 'N/A',
                                 description: record.Description || '',
-                                startTime: new Date(record['Start Date'] + ' ' + record['Start Time']),
-                                endTime: new Date(record['End Date'] + ' ' + record['End Time']),
+                                startTime: startTime,
+                                endTime: endTime,
                                 user: { uid: user.uid, name: user.displayName, email: user.email },
                                 isLive: false,
                             };
                             await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
                         }
-                        alert('Upload complete!');
+                        alert(`Upload complete! ${records.length - invalidCount} records were imported. ${invalidCount} invalid records were skipped.`);
                     },
                     error: (error) => {
                         alert('Error parsing CSV file.');
