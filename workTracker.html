@@ -70,8 +70,7 @@
             const [userData, setUserData] = useState(null);
             const [loading, setLoading] = useState(true);
             const [authError, setAuthError] = useState(null);
-            const [selectedTeam, setSelectedTeam] = useState(null);
-
+            
             useEffect(() => {
                 const unsubscribeAuth = window.firebase.onAuthStateChanged(auth, async (currentUser) => {
                     if (currentUser) {
@@ -80,7 +79,6 @@
                         if (userDocSnap.exists()) {
                             setUserData(userDocSnap.data());
                         } else {
-                            // Create user profile on first login
                             const newUserProfile = {
                                 email: currentUser.email,
                                 name: currentUser.displayName,
@@ -120,12 +118,10 @@
             const handleLogout = async () => {
                 try {
                     await window.firebase.signOut(auth);
-                    setSelectedTeam(null);
                 } catch (error) {
                     console.error("Logout failed", error);
                 }
             };
-
 
             if (loading) return <div className="text-center p-10">Loading Application...</div>;
 
@@ -133,14 +129,10 @@
                 return <LoginScreen onLogin={handleGoogleSignIn} error={authError} />;
             }
 
-            if (!selectedTeam) {
-                return <TeamSelectionScreen userData={userData} onSelectTeam={setSelectedTeam} onLogout={handleLogout} />;
-            }
-            
-            return <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} onLogout={handleLogout} />;
+            return <MainLayout user={user} userData={userData} onLogout={handleLogout} />;
         }
         
-        // --- Screens ---
+        // --- Screens & Layouts ---
 
         function LoginScreen({ onLogin, error }) {
             return (
@@ -161,48 +153,92 @@
                 </div>
             );
         }
+
+        function MainLayout({ user, userData, onLogout }) {
+            const [selectedTeam, setSelectedTeam] = useState(null);
+            const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
+            const [liveTimers, setLiveTimers] = useState([]);
+            const [activeTimerModalId, setActiveTimerModalId] = useState(null);
+
+            const isAdmin = userData?.roles?.includes('admin');
+
+            useEffect(() => {
+                if (!user) return;
+                const liveTimersQuery = window.firebase.query(
+                    window.firebase.collection(db, `live_timers/${user.uid}/timers`)
+                );
+                const unsubscribeLiveTimers = window.firebase.onSnapshot(liveTimersQuery, (snapshot) => {
+                    const timers = [];
+                    snapshot.forEach(doc => timers.push({ id: doc.id, ...doc.data() }));
+                    setLiveTimers(timers);
+                });
+                return () => unsubscribeLiveTimers();
+            }, [user]);
+
+            const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
+
+            return (
+                <div className="container mx-auto p-4 md:p-8 font-sans">
+                    <header className="flex justify-between items-center mb-8">
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
+                            {selectedTeam && <p className="text-gray-500">Team: <span className="font-semibold">{selectedTeam}</span></p>}
+                        </div>
+                        <div className="flex items-center space-x-4">
+                            <NotificationBell timers={liveTimers} onRestore={setActiveTimerModalId} />
+                            <div className="text-right">
+                                <p className="font-semibold">{user.displayName}</p>
+                                <p className="text-xs text-gray-500">{user.email}</p>
+                            </div>
+                            <img src={user.photoURL} alt="User profile" className="w-10 h-10 rounded-full" />
+                            <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout"><i className="fas fa-sign-out-alt fa-lg"></i></button>
+                            {isAdmin && <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings"><i className="fas fa-cog fa-lg"></i></button>}
+                        </div>
+                    </header>
+                    
+                    {selectedTeam ? (
+                        <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} liveTimers={liveTimers} setActiveTimerModalId={setActiveTimerModalId} />
+                    ) : (
+                        <TeamSelectionScreen userData={userData} onSelectTeam={setSelectedTeam} />
+                    )}
+
+                    {isSettingsModalOpen && <SettingsModal onClose={() => setSettingsModalOpen(false)} />}
+                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => setActiveTimerModalId(null)} onMinimize={() => setActiveTimerModalId(null)} />}
+                </div>
+            );
+        }
         
-        function TeamSelectionScreen({ userData, onSelectTeam, onLogout }) {
+        function TeamSelectionScreen({ userData, onSelectTeam }) {
              if (!userData || !userData.teams || userData.teams.length === 0) {
                 return (
-                     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-                        <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full">
-                            <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
-                            <p className="text-gray-600 mt-4">You are not assigned to any teams yet. Please contact an administrator.</p>
-                             <button onClick={onLogout} className="mt-6 w-full bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Logout</button>
-                        </div>
+                    <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
+                        <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
+                        <p className="text-gray-600 mt-4">You are not assigned to any teams yet. If you are an admin, please go to Settings to create a team.</p>
                     </div>
                 );
             }
             
             return (
-                <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-                    <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full">
-                        <h1 className="text-2xl font-bold text-gray-800">Select a Team</h1>
-                        <p className="text-gray-600 mt-2 mb-6">Choose a team to view its dashboard.</p>
-                        <select onChange={(e) => onSelectTeam(e.target.value)} defaultValue="" className="w-full p-3 border rounded-lg mb-4">
-                            <option value="" disabled>-- Select a team --</option>
-                            {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
-                        </select>
-                         <button onClick={onLogout} className="mt-2 w-full bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Logout</button>
-                    </div>
+                <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
+                    <h1 className="text-2xl font-bold text-gray-800">Select a Team</h1>
+                    <p className="text-gray-600 mt-2 mb-6">Choose a team to view its dashboard.</p>
+                    <select onChange={(e) => onSelectTeam(e.target.value)} defaultValue="" className="w-full p-3 border rounded-lg mb-4">
+                        <option value="" disabled>-- Select a team --</option>
+                        {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
+                    </select>
                 </div>
             );
         }
 
-        function Dashboard({ user, userData, selectedTeam, onLogout }) {
+        function Dashboard({ user, userData, selectedTeam, liveTimers, setActiveTimerModalId }) {
             const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
             const [settings, setSettings] = useState(defaultSettings);
             const [workLogs, setWorkLogs] = useState([]);
             const [lastVisible, setLastVisible] = useState(null);
             const [isLastPage, setIsLastPage] = useState(false);
             
-            const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
             const [isUploadModalOpen, setUploadModalOpen] = useState(false);
-            
-            const [liveTimers, setLiveTimers] = useState([]);
-            const [activeTimerModalId, setActiveTimerModalId] = useState(null);
 
             const fetchWorkLogs = useCallback(async (next = false) => {
                 let q = window.firebase.query(
@@ -236,7 +272,6 @@
 
 
             useEffect(() => {
-                if (!user) return;
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
                 const unsubscribeSettings = window.firebase.onSnapshot(settingsDocRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -246,22 +281,10 @@
                     }
                 });
 
-                const liveTimersQuery = window.firebase.query(
-                    window.firebase.collection(db, `live_timers/${user.uid}/timers`)
-                );
-                const unsubscribeLiveTimers = window.firebase.onSnapshot(liveTimersQuery, (snapshot) => {
-                    const timers = [];
-                    snapshot.forEach(doc => timers.push({ id: doc.id, ...doc.data() }));
-                    setLiveTimers(timers);
-                });
-
                 fetchWorkLogs();
 
-                return () => {
-                    unsubscribeSettings();
-                    unsubscribeLiveTimers();
-                };
-            }, [user]);
+                return () => unsubscribeSettings();
+            }, [user, selectedTeam]);
 
             const handleSaveWorkLog = async (logData) => {
                 if (logData.isLive) {
@@ -273,28 +296,8 @@
                 setWorkLogModalOpen(false);
             };
 
-            const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
-            const isAdmin = userData?.roles?.includes('admin');
-
             return (
-                <div className="container mx-auto p-4 md:p-8 font-sans">
-                    <header className="flex justify-between items-center mb-8">
-                        <div>
-                            <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
-                            <p className="text-gray-500">Team: <span className="font-semibold">{selectedTeam}</span></p>
-                        </div>
-                        <div className="flex items-center space-x-4">
-                            <NotificationBell timers={liveTimers} onRestore={setActiveTimerModalId} />
-                            <div className="text-right">
-                                <p className="font-semibold">{user.displayName}</p>
-                                <p className="text-xs text-gray-500">{user.email}</p>
-                            </div>
-                            <img src={user.photoURL} alt="User profile" className="w-10 h-10 rounded-full" />
-                            <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout"><i className="fas fa-sign-out-alt fa-lg"></i></button>
-                            {isAdmin && <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings"><i className="fas fa-cog fa-lg"></i></button>}
-                        </div>
-                    </header>
-
+                <>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                         <button onClick={() => setWorkLogModalOpen(true)} className="p-6 bg-green-500 text-white rounded-lg shadow-lg hover:bg-green-600 transition flex items-center justify-center text-xl font-semibold">
                             <i className="fas fa-play-circle mr-3"></i> Start New Work
@@ -309,11 +312,9 @@
 
                     <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} onRefresh={fetchWorkLogs} />
                     
-                    {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
                     {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
-                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => { setActiveTimerModalId(null); fetchWorkLogs(); }} onMinimize={() => setActiveTimerModalId(null)} settings={settings} />}
-                </div>
+                </>
             );
         }
 
@@ -552,85 +553,23 @@
             );
         }
 
-        function SettingsModal({ settings, onClose }) {
-            const [localSettings, setLocalSettings] = useState(JSON.parse(JSON.stringify(settings)));
-            
-            const handleSave = async () => {
-                const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
-                const settingsToSave = {
-                    projects: localSettings.projects || [],
-                    customFields: localSettings.customFields || [],
-                    confirmationTime: Number(localSettings.confirmationTime) || 30,
-                    autoStopTime: Number(localSettings.autoStopTime) || 60,
-                };
-                await window.firebase.setDoc(settingsDocRef, settingsToSave);
-                onClose();
-            };
-            
-            const addProject = () => {
-                const newProject = prompt("Enter new project name:");
-                if(newProject) setLocalSettings(s => ({ ...s, projects: [...s.projects, newProject] }));
-            };
-            const removeProject = (index) => {
-                setLocalSettings(s => ({ ...s, projects: s.projects.filter((_, i) => i !== index) }));
-            };
+        function SettingsModal({ onClose }) {
+            const [settings, setSettings] = useState({});
+            const [users, setUsers] = useState([]);
+            const [teams, setTeams] = useState([]);
 
-            const addCustomField = () => {
-                const newField = prompt("Enter new custom field label (e.g., Issue Source):");
-                if(newField) setLocalSettings(s => ({ ...s, customFields: [...(s.customFields || []), { label: newField, type: 'text' }] }));
-            };
-            const removeCustomField = (index) => {
-                setLocalSettings(s => ({ ...s, customFields: s.customFields.filter((_, i) => i !== index) }));
-            };
+            useEffect(() => {
+                // Fetch all settings, users, and teams for admin
+            }, []);
 
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
-                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-2xl max-h-full overflow-y-auto">
-                        <h2 className="text-2xl font-bold mb-6">Settings</h2>
-                        
-                        <div className="mb-6">
-                            <h3 className="font-semibold text-lg mb-2">Timer Configuration</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Confirmation prompt time (minutes)</label>
-                                    <input type="number" value={localSettings.confirmationTime} onChange={e => setLocalSettings(s => ({ ...s, confirmationTime: Number(e.target.value) }))} className="mt-1 block w-full p-2 border rounded-md"/>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Auto-stop time after prompt (seconds)</label>
-                                    <input type="number" value={localSettings.autoStopTime} onChange={e => setLocalSettings(s => ({ ...s, autoStopTime: Number(e.target.value) }))} className="mt-1 block w-full p-2 border rounded-md"/>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="mb-6">
-                            <h3 className="font-semibold text-lg mb-2">Projects</h3>
-                            <div className="space-y-2">
-                                {localSettings.projects.map((p, i) => (
-                                    <div key={i} className="flex justify-between items-center bg-gray-100 p-2 rounded">
-                                        <span>{p}</span>
-                                        <button onClick={() => removeProject(i)} className="text-red-500 hover:text-red-700">Remove</button>
-                                    </div>
-                                ))}
-                            </div>
-                            <button onClick={addProject} className="mt-2 text-blue-600 font-semibold">Add Project</button>
-                        </div>
-                        
-                        <div className="mb-6">
-                            <h3 className="font-semibold text-lg mb-2">Custom Work Log Fields</h3>
-                            <div className="space-y-2">
-                                {(localSettings.customFields || []).map((f, i) => (
-                                    <div key={i} className="flex justify-between items-center bg-gray-100 p-2 rounded">
-                                        <span>{f.label}</span>
-                                        <button onClick={() => removeCustomField(i)} className="text-red-500 hover:text-red-700">Remove</button>
-                                    </div>
-                                ))}
-                            </div>
-                            <button onClick={addCustomField} className="mt-2 text-blue-600 font-semibold">Add Custom Field</button>
-                        </div>
-
+                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-4xl max-h-full overflow-y-auto">
+                        <h2 className="text-2xl font-bold mb-6">Admin Settings</h2>
+                        {/* Admin UI for managing teams, users, roles, projects etc. */}
+                        <p>Admin controls for teams, users, and application settings will be here.</p>
                         <div className="flex justify-end space-x-4 mt-8">
-                            <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Cancel</button>
-                            <button onClick={handleSave} className="py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save</button>
+                            <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Close</button>
                         </div>
                     </div>
                 </div>
