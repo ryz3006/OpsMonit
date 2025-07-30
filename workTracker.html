@@ -142,8 +142,6 @@
             const [activeTimerModalId, setActiveTimerModalId] = useState(null);
 
             const fetchWorkLogs = useCallback(async (next = false) => {
-                // REVERTED: This query now relies on the Firebase index.
-                // The user MUST create this index in the Firebase console.
                 let q = window.firebase.query(
                     window.firebase.collection(db, "manual_work_reports"),
                     window.firebase.where("user.email", "==", user.email),
