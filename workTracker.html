@@ -142,6 +142,8 @@
             const [activeTimerModalId, setActiveTimerModalId] = useState(null);
 
             const fetchWorkLogs = useCallback(async (next = false) => {
+                // REVERTED: This query now relies on the Firebase index.
+                // The user MUST create this index in the Firebase console.
                 let q = window.firebase.query(
                     window.firebase.collection(db, "manual_work_reports"),
                     window.firebase.where("user.email", "==", user.email),
@@ -289,12 +291,12 @@
             useEffect(() => {
                 const calculateElapsed = () => {
                     if (timerData.isPaused) {
-                        return timerData.pausedDuration;
+                        return timerData.totalElapsedTime || 0;
                     }
                     const now = Date.now();
-                    const start = timerData.startTime.toMillis();
-                    const pauseTime = timerData.pausedDuration || 0;
-                    return (now - start) - pauseTime;
+                    const resumeTime = timerData.lastResumedTime?.toMillis() || timerData.startTime.toMillis();
+                    const baseElapsedTime = timerData.totalElapsedTime || 0;
+                    return baseElapsedTime + (now - resumeTime);
                 };
 
                 setElapsed(calculateElapsed());
@@ -309,19 +311,20 @@
             const handlePause = async () => {
                 clearInterval(timerRef.current);
                 const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
+                const now = Date.now();
+                const resumeTime = timerData.lastResumedTime?.toMillis() || timerData.startTime.toMillis();
+                const newElapsedTime = (timerData.totalElapsedTime || 0) + (now - resumeTime);
                 await window.firebase.updateDoc(timerDocRef, {
                     isPaused: true,
-                    lastPausedTime: window.firebase.serverTimestamp()
+                    totalElapsedTime: newElapsedTime
                 });
             };
             
             const handleResume = async () => {
                 const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
-                const pauseDuration = Date.now() - timerData.lastPausedTime.toMillis();
                 await window.firebase.updateDoc(timerDocRef, {
                     isPaused: false,
-                    pausedDuration: (timerData.pausedDuration || 0) + pauseDuration,
-                    lastPausedTime: null
+                    lastResumedTime: window.firebase.serverTimestamp()
                 });
             };
 
@@ -335,8 +338,8 @@
                 };
                 delete finalLog.id;
                 delete finalLog.isPaused;
-                delete finalLog.pausedDuration;
-                delete finalLog.lastPausedTime;
+                delete finalLog.totalElapsedTime;
+                delete finalLog.lastResumedTime;
 
                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), finalLog);
                 await window.firebase.deleteDoc(window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id));
@@ -541,10 +544,10 @@
                     user: { uid: user.uid, name: user.displayName, email: user.email },
                     isLive: true,
                     startTime: now,
+                    lastResumedTime: now,
                     endTime: null,
                     isPaused: false,
-                    pausedDuration: 0,
-                    lastPausedTime: null,
+                    totalElapsedTime: 0,
                 };
                 onSave(logData);
             };
