@@ -34,6 +34,12 @@
             0%, 100% { opacity: 1; }
             50% { opacity: .7; }
         }
+        /* Style for sticky header */
+        .sticky-header {
+            position: sticky;
+            top: 0;
+            z-index: 50; /* Ensure it's on top */
+        }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -164,6 +170,14 @@
             const [activeTimerModalId, setActiveTimerModalId] = useState(null);
 
             const isAdmin = userData?.roles?.includes('admin');
+            const hasTeams = userData?.teams && userData.teams.length > 0;
+
+            useEffect(() => {
+                // Set default team if available and none is selected
+                if (hasTeams && !selectedTeam) {
+                    setSelectedTeam(userData.teams[0]);
+                }
+            }, [userData, selectedTeam, hasTeams]);
 
             useEffect(() => {
                 if (!user) return;
@@ -181,14 +195,23 @@
             const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
 
             return (
-                <div className="container mx-auto p-4 md:p-8 font-sans">
-                    <header className="flex justify-between items-center mb-8">
-                        <div>
-                            <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
-                            {selectedTeam && <p className="text-gray-500">Team: <span className="font-semibold">{selectedTeam}</span></p>}
-                        </div>
+                <div className="font-sans">
+                    <header className="sticky-header bg-white shadow-md p-4 flex justify-between items-center">
+                        <h1 className="text-2xl font-bold text-gray-800">Work Tracker</h1>
                         <div className="flex items-center space-x-4">
-                            <NotificationBell timers={liveTimers} onRestore={setActiveTimerModalId} />
+                             {hasTeams && (
+                                <div className="flex items-center space-x-2">
+                                    <label htmlFor="team-select" className="text-sm font-medium text-gray-700">Team:</label>
+                                    <select 
+                                        id="team-select"
+                                        value={selectedTeam || ''}
+                                        onChange={(e) => setSelectedTeam(e.target.value)}
+                                        className="p-2 border rounded-md bg-gray-50 text-sm"
+                                    >
+                                        {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
+                                    </select>
+                                </div>
+                             )}
                             <div className="text-right">
                                 <p className="font-semibold">{user.displayName}</p>
                                 <p className="text-xs text-gray-500">{user.email}</p>
@@ -199,36 +222,21 @@
                         </div>
                     </header>
                     
-                    {selectedTeam ? (
-                        <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} />
-                    ) : (
-                        <TeamSelectionScreen userData={userData} onSelectTeam={setSelectedTeam} />
-                    )}
+                    <FloatingTimerBar timers={liveTimers} onRestore={setActiveTimerModalId} />
+
+                    <main className="container mx-auto p-4 md:p-8">
+                        {selectedTeam ? (
+                            <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} />
+                        ) : (
+                            <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
+                                <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
+                                <p className="text-gray-600 mt-4">You have not been assigned to any teams. If you are an admin, please go to Settings to create a team and assign yourself to it.</p>
+                            </div>
+                        )}
+                    </main>
 
                     {isSettingsModalOpen && <SettingsModal onClose={() => setSettingsModalOpen(false)} />}
                     {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => setActiveTimerModalId(null)} onMinimize={() => setActiveTimerModalId(null)} />}
-                </div>
-            );
-        }
-        
-        function TeamSelectionScreen({ userData, onSelectTeam }) {
-             if (!userData || !userData.teams || userData.teams.length === 0) {
-                return (
-                    <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
-                        <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
-                        <p className="text-gray-600 mt-4">You are not assigned to any teams yet. If you are an admin, please go to Settings to create a team.</p>
-                    </div>
-                );
-            }
-            
-            return (
-                <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
-                    <h1 className="text-2xl font-bold text-gray-800">Select a Team</h1>
-                    <p className="text-gray-600 mt-2 mb-6">Choose a team to view its dashboard.</p>
-                    <select onChange={(e) => onSelectTeam(e.target.value)} defaultValue="" className="w-full p-3 border rounded-lg mb-4">
-                        <option value="" disabled>-- Select a team --</option>
-                        {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
-                    </select>
                 </div>
             );
         }
@@ -323,26 +331,34 @@
 
         // --- Child Components ---
         
-        function NotificationBell({ timers, onRestore }) {
+        function FloatingTimerBar({ timers, onRestore }) {
             const [isOpen, setIsOpen] = useState(false);
             if (timers.length === 0) return null;
 
             return (
-                <div className="relative">
-                    <button onClick={() => setIsOpen(!isOpen)} className="text-gray-500 hover:text-blue-600 relative">
-                        <i className="fas fa-bell fa-lg"></i>
-                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">{timers.length}</span>
-                    </button>
+                <div className="sticky-header bg-blue-600 text-white shadow-lg cursor-pointer">
+                    <div 
+                        onClick={() => setIsOpen(!isOpen)} 
+                        className="container mx-auto p-2 flex items-center justify-between"
+                    >
+                        <div className="flex items-center space-x-3">
+                           <i className="fas fa-stopwatch timer-pulse"></i>
+                           <span className="font-semibold text-sm">Ongoing Timers</span>
+                        </div>
+                        <div className="flex items-center space-x-3">
+                           <span className="bg-white text-blue-600 text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">{timers.length}</span>
+                           <i className={`fas fa-chevron-down transition-transform ${isOpen ? 'rotate-180' : ''}`}></i>
+                        </div>
+                    </div>
                     {isOpen && (
-                        <div className="absolute right-0 mt-2 w-72 bg-white rounded-md shadow-lg z-10">
-                            <div className="p-2 font-semibold border-b">Ongoing Tasks</div>
-                            <div className="p-2 max-h-64 overflow-y-auto">
+                        <div className="container mx-auto pb-2">
+                             <div className="bg-blue-700 rounded-b-lg p-2 max-h-64 overflow-y-auto">
                                 {timers.map(timer => (
-                                    <div key={timer.id} className="mb-2 p-2 hover:bg-gray-100 rounded">
+                                    <div key={timer.id} className="mb-2 p-2 hover:bg-blue-800 rounded">
                                         <p className="font-semibold text-sm truncate">{timer.project}: {timer.ticketLink}</p>
                                         <div className="flex justify-between items-center">
-                                            <span className={`text-xs ${timer.isPaused ? 'text-yellow-600' : 'text-green-600'}`}>{timer.isPaused ? 'Paused' : 'Running'}</span>
-                                            <button onClick={() => { onRestore(timer.id); setIsOpen(false); }} className="text-blue-600 text-sm">View</button>
+                                            <span className={`text-xs ${timer.isPaused ? 'text-yellow-300' : 'text-green-300'}`}>{timer.isPaused ? 'Paused' : 'Running'}</span>
+                                            <button onClick={() => onRestore(timer.id)} className="text-white font-bold text-sm hover:underline">View</button>
                                         </div>
                                     </div>
                                 ))}
