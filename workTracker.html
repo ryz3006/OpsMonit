@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Work Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        window.firebase = {
+            initializeApp,
+            getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
+            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy
+        };
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .modal {
+            transition: opacity 0.25s ease;
+        }
+        .modal-active {
+            display: flex;
+        }
+        .timer-pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .7; }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCCOH7T907XnZoGxJaESLQghUE0xSDPiHk",
+            authDomain: "dalignzo.firebaseapp.com",
+            projectId: "dalignzo",
+            storageBucket: "dalignzo.appspot.com",
+            messagingSenderId: "901156603087",
+            appId: "1:901156603087:web:c95c9f4f714f8f0be263ba",
+            measurementId: "G-36S66F65D6"
+        };
+        
+        let app, auth, db;
+        try {
+            app = window.firebase.initializeApp(firebaseConfig);
+            auth = window.firebase.getAuth(app);
+            db = window.firebase.getFirestore(app);
+        } catch (e) {
+            console.error("Firebase initialization error:", e);
+        }
+
+        // --- Main App Component ---
+        function App() {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [authError, setAuthError] = useState(null);
+            
+            useEffect(() => {
+                const unsubscribeAuth = window.firebase.onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    setLoading(false);
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            const handleGoogleSignIn = async () => {
+                const provider = new window.firebase.GoogleAuthProvider();
+                try {
+                    await window.firebase.signInWithPopup(auth, provider);
+                    setAuthError(null);
+                } catch (error) {
+                    console.error("Google Sign-in failed", error);
+                    setAuthError(`Google Sign-in failed: ${error.message}`);
+                }
+            };
+            
+            const handleLogout = async () => {
+                try {
+                    await window.firebase.signOut(auth);
+                } catch (error) {
+                    console.error("Logout failed", error);
+                }
+            };
+
+
+            if (loading) return <div className="text-center p-10">Loading Application...</div>;
+
+            return (
+                <div>
+                    {user ? <Dashboard user={user} onLogout={handleLogout} /> : <LoginScreen onLogin={handleGoogleSignIn} error={authError} />}
+                </div>
+            );
+        }
+        
+        // --- Screens ---
+
+        function LoginScreen({ onLogin, error }) {
+            return (
+                <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
+                    <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full">
+                        <i className="fas fa-tasks fa-3x text-blue-600 mb-4"></i>
+                        <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
+                        <p className="text-gray-500 mt-2 mb-8">Log your work, track your time, stay productive.</p>
+                        <button
+                            onClick={onLogin}
+                            className="w-full bg-white border border-gray-300 text-gray-700 font-semibold py-3 px-6 rounded-lg hover:bg-gray-100 transition-colors duration-300 flex items-center justify-center"
+                        >
+                            <img src="https://www.google.com/favicon.ico" alt="Google icon" className="w-6 h-6 mr-3" />
+                            Sign in with Google
+                        </button>
+                        {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+                    </div>
+                </div>
+            );
+        }
+
+        function Dashboard({ user, onLogout }) {
+            const [settings, setSettings] = useState({ projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 });
+            const [workLogs, setWorkLogs] = useState([]);
+            
+            const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
+            const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
+            const [workLogModalMode, setWorkLogModalMode] = useState('live');
+
+            const [liveTimer, setLiveTimer] = useState(null);
+
+            useEffect(() => {
+                if (!user) return;
+                // Fetch Settings
+                const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
+                const unsubscribeSettings = window.firebase.onSnapshot(settingsDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setSettings(docSnap.data());
+                    } else {
+                        window.firebase.setDoc(settingsDocRef, { projects: ['Default Project'], customFields: [], confirmationTime: 30, autoStopTime: 60 });
+                    }
+                });
+
+                // Fetch Work Logs
+                const logsQuery = window.firebase.query(window.firebase.collection(db, "manual_work_reports"), window.firebase.orderBy("startTime", "desc"));
+                const unsubscribeLogs = window.firebase.onSnapshot(logsQuery, (querySnapshot) => {
+                    const logs = [];
+                    querySnapshot.forEach((doc) => {
+                        logs.push({ id: doc.id, ...doc.data() });
+                    });
+                    setWorkLogs(logs);
+                });
+
+                return () => {
+                    unsubscribeSettings();
+                    unsubscribeLogs();
+                };
+            }, [user]);
+
+            const handleSaveWorkLog = async (logData) => {
+                try {
+                    const docRef = await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
+                    console.log("Work log saved with ID: ", docRef.id);
+                    if(logData.isLive) {
+                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.toMillis() });
+                    }
+                    setWorkLogModalOpen(false);
+                } catch (error) {
+                    console.error("Error adding work log: ", error);
+                    alert("Failed to save work log.");
+                }
+            };
+
+            const handleStopLiveTimer = async () => {
+                if(!liveTimer || !liveTimer.id) return;
+                const docRef = window.firebase.doc(db, "manual_work_reports", liveTimer.id);
+                await window.firebase.setDoc(docRef, { endTime: new Date() }, { merge: true });
+                setLiveTimer(null);
+            };
+            
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: async (results) => {
+                        const records = results.data;
+                        alert(`Found ${records.length} records. Uploading to Firestore...`);
+                        
+                        for (const record of records) {
+                            const logData = {
+                                project: record.Project || 'N/A',
+                                ticketLink: record.Task || 'N/A',
+                                description: record.Description || '',
+                                startTime: new Date(record['Start Date'] + ' ' + record['Start Time']),
+                                endTime: new Date(record['End Date'] + ' ' + record['End Time']),
+                                user: { uid: user.uid, name: user.displayName, email: user.email },
+                                isLive: false,
+                            };
+                            await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
+                        }
+                        alert('Upload complete!');
+                    },
+                    error: (error) => {
+                        alert('Error parsing CSV file.');
+                        console.error(error);
+                    }
+                });
+                event.target.value = null;
+            };
+
+            return (
+                <div className="container mx-auto p-4 md:p-8 font-sans">
+                    <header className="flex justify-between items-center mb-8">
+                        <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
+                        <div className="flex items-center space-x-4">
+                            <div className="text-right">
+                                <p className="font-semibold">{user.displayName}</p>
+                                <p className="text-xs text-gray-500">{user.email}</p>
+                            </div>
+                            <img src={user.photoURL} alt="User profile" className="w-10 h-10 rounded-full" />
+                            <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout">
+                                <i className="fas fa-sign-out-alt fa-lg"></i>
+                            </button>
+                            <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings">
+                                <i className="fas fa-cog fa-lg"></i>
+                            </button>
+                        </div>
+                    </header>
+
+                    {liveTimer && <LiveTimerCard timerData={liveTimer} settings={settings} onStop={handleStopLiveTimer} />}
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <button disabled={!!liveTimer} onClick={() => { setWorkLogModalMode('live'); setWorkLogModalOpen(true); }} className="p-6 bg-green-500 text-white rounded-lg shadow-lg hover:bg-green-600 transition disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center text-xl font-semibold">
+                            <i className="fas fa-play-circle mr-3"></i> Start Live Work
+                        </button>
+                        <button onClick={() => { setWorkLogModalMode('manual'); setWorkLogModalOpen(true); }} className="p-6 bg-blue-500 text-white rounded-lg shadow-lg hover:bg-blue-600 transition flex items-center justify-center text-xl font-semibold">
+                            <i className="fas fa-plus-circle mr-3"></i> Add Old Work
+                        </button>
+                        <label className="p-6 bg-purple-500 text-white rounded-lg shadow-lg hover:bg-purple-600 transition flex items-center justify-center text-xl font-semibold cursor-pointer">
+                            <i className="fas fa-upload mr-3"></i> Upload CSV
+                            <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
+                        </label>
+                    </div>
+
+                    <WorkLogsTable logs={workLogs} />
+                    
+                    {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
+                    {isWorkLogModalOpen && <WorkLogModal mode={workLogModalMode} settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
+                </div>
+            );
+        }
+
+        // --- Child Components ---
+
+        function LiveTimerCard({ timerData, settings, onStop }) {
+            const [elapsed, setElapsed] = useState('');
+            const [isConfirming, setConfirming] = useState(false);
+            const confirmationTimeoutRef = useRef(null);
+            const autoStopTimeoutRef = useRef(null);
+
+            const resetTimeouts = useCallback(() => {
+                clearTimeout(confirmationTimeoutRef.current);
+                clearTimeout(autoStopTimeoutRef.current);
+
+                confirmationTimeoutRef.current = setTimeout(() => {
+                    setConfirming(true);
+                    autoStopTimeoutRef.current = setTimeout(() => {
+                        onStop();
+                    }, settings.autoStopTime * 1000);
+                }, settings.confirmationTime * 60 * 1000);
+                 console.log(`Confirmation timer reset. Next check in ${settings.confirmationTime} minutes.`);
+            }, [settings.confirmationTime, settings.autoStopTime, onStop]);
+
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const now = new Date();
+                    const start = new Date(timerData.startTime);
+                    const diff = now - start;
+                    const hours = Math.floor(diff / 3600000).toString().padStart(2, '0');
+                    const minutes = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
+                    const seconds = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
+                    setElapsed(`${hours}:${minutes}:${seconds}`);
+                }, 1000);
+
+                resetTimeouts();
+
+                return () => {
+                    clearInterval(interval);
+                    clearTimeout(confirmationTimeoutRef.current);
+                    clearTimeout(autoStopTimeoutRef.current);
+                };
+            }, [timerData.startTime, resetTimeouts]);
+
+            const handleConfirmContinue = () => {
+                setConfirming(false);
+                resetTimeouts();
+            };
+
+            return (
+                <div className="bg-white p-6 rounded-lg shadow-xl mb-8 border-l-4 border-green-500">
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <p className="font-bold text-xl text-gray-800">{timerData.project}</p>
+                            <p className="text-gray-600">{timerData.ticketLink}</p>
+                            <p className="text-sm text-gray-500 mt-1">{timerData.description}</p>
+                        </div>
+                        <div className="text-right">
+                            <p className={`text-4xl font-mono font-bold text-green-600 timer-pulse`}>{elapsed}</p>
+                            <button onClick={onStop} className="mt-2 bg-red-500 text-white py-2 px-4 rounded-lg hover:bg-red-600 transition text-sm">
+                                <i className="fas fa-stop-circle mr-2"></i>Stop
+                            </button>
+                        </div>
+                    </div>
+                    {isConfirming && (
+                        <div className="mt-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 rounded">
+                            <h4 className="font-bold text-yellow-800">Are you still working?</h4>
+                            <p className="text-sm text-yellow-700">Timer will stop automatically if you don't respond.</p>
+                            <button onClick={handleConfirmContinue} className="mt-2 bg-green-500 text-white py-1 px-3 rounded text-sm">Yes, continue tracking</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function WorkLogsTable({ logs }) {
+            const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
+            const formatDuration = (start, end) => {
+                if (!start || !end) return 'In Progress';
+                const diff = (end.seconds - start.seconds) * 1000;
+                const hours = Math.floor(diff / 3600000);
+                const minutes = Math.floor((diff % 3600000) / 60000);
+                return `${hours}h ${minutes}m`;
+            };
+
+            return (
+                <div className="bg-white p-4 rounded-lg shadow-md">
+                    <h2 className="text-2xl font-bold mb-4 text-gray-700">Work Logs</h2>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                            <thead>
+                                <tr className="bg-gray-50 border-b">
+                                    <th className="p-3">Project</th>
+                                    <th className="p-3">Ticket/Task</th>
+                                    <th className="p-3">Start Time</th>
+                                    <th className="p-3">End Time</th>
+                                    <th className="p-3">Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {logs.map(log => (
+                                    <tr key={log.id} className="border-b hover:bg-gray-50">
+                                        <td className="p-3 font-medium">{log.project}</td>
+                                        <td className="p-3">{log.ticketLink}</td>
+                                        <td className="p-3">{formatTime(log.startTime)}</td>
+                                        <td className="p-3">{formatTime(log.endTime)}</td>
+                                        <td className="p-3 font-mono">{formatDuration(log.startTime, log.endTime)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function SettingsModal({ settings, onClose }) {
+            const [localSettings, setLocalSettings] = useState(JSON.parse(JSON.stringify(settings)));
+            
+            const handleSave = async () => {
+                const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
+                await window.firebase.setDoc(settingsDocRef, localSettings);
+                onClose();
+            };
+            
+            const addProject = () => {
+                const newProject = prompt("Enter new project name:");
+                if(newProject) setLocalSettings(s => ({ ...s, projects: [...s.projects, newProject] }));
+            };
+            const removeProject = (index) => {
+                setLocalSettings(s => ({ ...s, projects: s.projects.filter((_, i) => i !== index) }));
+            };
+
+            const addCustomField = () => {
+                const newField = prompt("Enter new custom field label (e.g., Issue Source):");
+                if(newField) setLocalSettings(s => ({ ...s, customFields: [...(s.customFields || []), { label: newField, type: 'text' }] }));
+            };
+            const removeCustomField = (index) => {
+                setLocalSettings(s => ({ ...s, customFields: s.customFields.filter((_, i) => i !== index) }));
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
+                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-2xl max-h-full overflow-y-auto">
+                        <h2 className="text-2xl font-bold mb-6">Settings</h2>
+                        
+                        <div className="mb-6">
+                            <h3 className="font-semibold text-lg mb-2">Timer Configuration</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Confirmation prompt time (minutes)</label>
+                                    <input type="number" value={localSettings.confirmationTime} onChange={e => setLocalSettings(s => ({ ...s, confirmationTime: Number(e.target.value) }))} className="mt-1 block w-full p-2 border rounded-md"/>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Auto-stop time after prompt (seconds)</label>
+                                    <input type="number" value={localSettings.autoStopTime} onChange={e => setLocalSettings(s => ({ ...s, autoStopTime: Number(e.target.value) }))} className="mt-1 block w-full p-2 border rounded-md"/>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mb-6">
+                            <h3 className="font-semibold text-lg mb-2">Projects</h3>
+                            <div className="space-y-2">
+                                {localSettings.projects.map((p, i) => (
+                                    <div key={i} className="flex justify-between items-center bg-gray-100 p-2 rounded">
+                                        <span>{p}</span>
+                                        <button onClick={() => removeProject(i)} className="text-red-500 hover:text-red-700">Remove</button>
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={addProject} className="mt-2 text-blue-600 font-semibold">Add Project</button>
+                        </div>
+                        
+                        <div className="mb-6">
+                            <h3 className="font-semibold text-lg mb-2">Custom Work Log Fields</h3>
+                            <div className="space-y-2">
+                                {(localSettings.customFields || []).map((f, i) => (
+                                    <div key={i} className="flex justify-between items-center bg-gray-100 p-2 rounded">
+                                        <span>{f.label}</span>
+                                        <button onClick={() => removeCustomField(i)} className="text-red-500 hover:text-red-700">Remove</button>
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={addCustomField} className="mt-2 text-blue-600 font-semibold">Add Custom Field</button>
+                        </div>
+
+                        <div className="flex justify-end space-x-4 mt-8">
+                            <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Cancel</button>
+                            <button onClick={handleSave} className="py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function WorkLogModal({ mode, settings, user, onSave, onClose }) {
+            const [formData, setFormData] = useState({
+                project: settings.projects[0] || '',
+                ticketLink: '',
+                description: '',
+                startTime: '',
+                endTime: '',
+            });
+
+            useEffect(() => {
+                const initialCustomFields = {};
+                (settings.customFields || []).forEach(field => {
+                    initialCustomFields[field.label] = '';
+                });
+                setFormData(fd => ({...fd, ...initialCustomFields}));
+            }, [settings.customFields]);
+
+            const handleChange = (e) => {
+                const { name, value } = e.target;
+                setFormData(prev => ({ ...prev, [name]: value }));
+            };
+
+            const handleCustomFieldChange = (label, value) => {
+                setFormData(prev => ({ ...prev, [label]: value }));
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                const now = new Date();
+                const logData = {
+                    project: formData.project,
+                    ticketLink: formData.ticketLink,
+                    description: formData.description,
+                    user: { uid: user.uid, name: user.displayName, email: user.email },
+                    isLive: mode === 'live',
+                    startTime: mode === 'live' ? now : new Date(formData.startTime),
+                    endTime: mode === 'live' ? null : new Date(formData.endTime),
+                };
+                
+                (settings.customFields || []).forEach(field => {
+                    if(formData[field.label]) {
+                        logData[field.label] = formData[field.label];
+                    }
+                });
+
+                onSave(logData);
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
+                    <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
+                        <h2 className="text-2xl font-bold mb-6">{mode === 'live' ? 'Start New Work' : 'Add Old Work Log'}</h2>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Project</label>
+                                <select name="project" value={formData.project} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required>
+                                    {settings.projects.map(p => <option key={p} value={p}>{p}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Ticket Link / Task Name</label>
+                                <input type="text" name="ticketLink" value={formData.ticketLink} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700">Description</label>
+                                <textarea name="description" value={formData.description} onChange={handleChange} rows="3" className="mt-1 block w-full p-2 border rounded-md"></textarea>
+                            </div>
+
+                            {(settings.customFields || []).map(field => (
+                                <div key={field.label}>
+                                    <label className="block text-sm font-medium text-gray-700">{field.label}</label>
+                                    <input type="text" value={formData[field.label] || ''} onChange={(e) => handleCustomFieldChange(field.label, e.target.value)} className="mt-1 block w-full p-2 border rounded-md" />
+                                </div>
+                            ))}
+
+                            {mode === 'manual' && (
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                                        <input type="datetime-local" name="startTime" value={formData.startTime} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">End Time</label>
+                                        <input type="datetime-local" name="endTime" value={formData.endTime} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end space-x-4 mt-8">
+                            <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Cancel</button>
+                            <button type="submit" className="py-2 px-6 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                                {mode === 'live' ? 'Start Timer' : 'Save Log'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
