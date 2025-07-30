@@ -252,9 +252,12 @@
             const [isUploadModalOpen, setUploadModalOpen] = useState(false);
 
             const fetchWorkLogs = useCallback(async (next = false) => {
+                if (!selectedTeam) return; // Don't fetch if no team is selected
+
                 let q = window.firebase.query(
                     window.firebase.collection(db, "manual_work_reports"),
                     window.firebase.where("user.email", "==", user.email),
+                    window.firebase.where("team", "==", selectedTeam), // Filter by selected team
                     window.firebase.orderBy("startTime", "desc"),
                     window.firebase.limit(25)
                 );
@@ -270,7 +273,7 @@
                         logs.push({ id: doc.id, ...doc.data() });
                     });
                     
-                    setWorkLogs(logs);
+                    setWorkLogs(prevLogs => next ? [...prevLogs, ...logs] : logs);
                     setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
                     setIsLastPage(documentSnapshots.docs.length < 25);
                 } catch(e) {
@@ -279,7 +282,7 @@
                         alert("A database index is required for this query. Please follow the link in the console to create it.");
                     }
                 }
-            }, [user, lastVisible]);
+            }, [user, lastVisible, selectedTeam]);
 
 
             useEffect(() => {
@@ -295,14 +298,14 @@
                 fetchWorkLogs();
 
                 return () => unsubscribeSettings();
-            }, [user, selectedTeam]);
+            }, [selectedTeam, fetchWorkLogs]); // Re-fetch when selectedTeam changes
 
             const handleSaveWorkLog = async (logData) => {
                 if (logData.isLive) {
                     await window.firebase.addDoc(window.firebase.collection(db, `live_timers/${user.uid}/timers`), logData);
                 } else {
                     await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
-                    fetchWorkLogs();
+                    fetchWorkLogs(); // Refresh the log list
                 }
                 setWorkLogModalOpen(false);
             };
@@ -321,10 +324,10 @@
                         </button>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} onRefresh={fetchWorkLogs} />
+                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} />
                     
-                    {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
-                    {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
+                    {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} selectedTeam={selectedTeam} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
+                    {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} selectedTeam={selectedTeam} onClose={() => setUploadModalOpen(false)} />}
                 </>
             );
         }
@@ -407,8 +410,11 @@
 
                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), finalLog);
                 await window.firebase.deleteDoc(window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id));
-                onStop();
-            }, [timerData, user, onStop, calculateElapsed]);
+                
+                // Refresh the page as requested
+                window.location.reload();
+
+            }, [timerData, user, calculateElapsed]);
 
             const resetTimeouts = useCallback(() => {
                 // ... timer logic
@@ -494,7 +500,7 @@
             );
         }
 
-        function WorkLogsTable({ logs, user, onNextPage, isLastPage, onRefresh }) {
+        function WorkLogsTable({ logs, user, onNextPage, isLastPage }) {
             const [selectedLogs, setSelectedLogs] = useState([]);
 
             const handleDelete = async (ids) => {
@@ -503,8 +509,9 @@
                 for (const id of ids) {
                     await window.firebase.deleteDoc(window.firebase.doc(db, "manual_work_reports", id));
                 }
-                setSelectedLogs([]);
-                onRefresh();
+                
+                // Refresh the page as requested
+                window.location.reload();
             };
 
             const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
@@ -672,7 +679,7 @@
             );
         }
 
-        function WorkLogModal({ settings, user, onSave, onClose }) {
+        function WorkLogModal({ settings, user, onSave, onClose, selectedTeam }) {
             const [formData, setFormData] = useState({
                 project: settings.projects[0] || '',
                 ticketLink: '',
@@ -684,6 +691,7 @@
                 const now = new Date();
                 const logData = {
                     ...formData,
+                    team: selectedTeam,
                     user: { uid: user.uid, name: user.displayName, email: user.email },
                     isLive: true,
                     startTime: now,
@@ -724,7 +732,7 @@
             );
         }
 
-        function UploadModal({ user, currentProjects, onClose }) {
+        function UploadModal({ user, currentProjects, onClose, selectedTeam }) {
             const [file, setFile] = useState(null);
             const [progress, setProgress] = useState(0);
             const [total, setTotal] = useState(0);
@@ -775,6 +783,7 @@
                                     ticketLink: record.Task || 'N/A',
                                     description: record.Description || '',
                                     startTime, endTime,
+                                    team: selectedTeam,
                                     user: { email: record.Email },
                                     uploader: { name: user.displayName, email: user.email },
                                     isLive: false,
@@ -791,6 +800,8 @@
                             });
                         }
                         setUploading(false);
+                        // Refresh page after upload is complete
+                        window.location.reload();
                     }
                 });
             };
