@@ -12,11 +12,11 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
         window.firebase = {
             initializeApp,
             getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc
+            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion
         };
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -131,6 +131,10 @@
             const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
             const [settings, setSettings] = useState(defaultSettings);
             const [workLogs, setWorkLogs] = useState([]);
+            const [lastVisible, setLastVisible] = useState(null);
+            const [isLastPage, setIsLastPage] = useState(false);
+            
+            const [filters, setFilters] = useState({ project: '', ticket: '', startDate: '' });
             
             const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
@@ -138,10 +142,35 @@
             const [workLogModalMode, setWorkLogModalMode] = useState('live');
 
             const [liveTimer, setLiveTimer] = useState(null);
+            const [isTimerModalMinimized, setTimerModalMinimized] = useState(false);
+
+            const fetchWorkLogs = useCallback(async (next = false) => {
+                let q = window.firebase.query(
+                    window.firebase.collection(db, "manual_work_reports"),
+                    window.firebase.where("user.email", "==", user.email),
+                    window.firebase.orderBy("startTime", "desc"),
+                    window.firebase.limit(25)
+                );
+
+                if (next && lastVisible) {
+                    q = window.firebase.query(q, window.firebase.startAfter(lastVisible));
+                }
+
+                const documentSnapshots = await window.firebase.getDocs(q);
+                
+                const logs = [];
+                documentSnapshots.forEach((doc) => {
+                    logs.push({ id: doc.id, ...doc.data() });
+                });
+                
+                setWorkLogs(logs);
+                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                setIsLastPage(documentSnapshots.docs.length < 25);
+            }, [user, lastVisible]);
+
 
             useEffect(() => {
                 if (!user) return;
-                // Fetch Settings
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
                 const unsubscribeSettings = window.firebase.onSnapshot(settingsDocRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -151,46 +180,32 @@
                     }
                 });
 
-                // Fetch Work Logs for the logged-in user
-                const logsQuery = window.firebase.query(
-                    window.firebase.collection(db, "manual_work_reports"), 
-                    window.firebase.where("user.email", "==", user.email)
-                );
-                const unsubscribeLogs = window.firebase.onSnapshot(logsQuery, (querySnapshot) => {
-                    const logs = [];
-                    querySnapshot.forEach((doc) => {
-                        logs.push({ id: doc.id, ...doc.data() });
-                    });
-                    // Sort logs by start time descending on the client-side
-                    logs.sort((a, b) => b.startTime.seconds - a.startTime.seconds);
-                    setWorkLogs(logs);
-                });
+                fetchWorkLogs();
 
                 return () => {
                     unsubscribeSettings();
-                    unsubscribeLogs();
                 };
             }, [user]);
 
             const handleSaveWorkLog = async (logData) => {
                 try {
                     const docRef = await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
-                    console.log("Work log saved with ID: ", docRef.id);
                     if (logData.isLive) {
-                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.getTime() });
+                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.getTime(), isPaused: false, pausedDuration: 0 });
                     }
                     setWorkLogModalOpen(false);
+                    fetchWorkLogs(); // Refresh logs
                 } catch (error) {
-                    console.error("Error processing work log after save: ", error);
-                    alert("Failed to start live timer after saving.");
+                    console.error("Error saving work log: ", error);
                 }
             };
 
             const handleStopLiveTimer = async () => {
-                if(!liveTimer || !liveTimer.id) return;
+                if (!liveTimer || !liveTimer.id) return;
                 const docRef = window.firebase.doc(db, "manual_work_reports", liveTimer.id);
-                await window.firebase.setDoc(docRef, { endTime: new Date() }, { merge: true });
+                await window.firebase.updateDoc(docRef, { endTime: new Date() });
                 setLiveTimer(null);
+                fetchWorkLogs();
             };
 
             return (
@@ -198,21 +213,16 @@
                     <header className="flex justify-between items-center mb-8">
                         <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
                         <div className="flex items-center space-x-4">
+                            {liveTimer && <NotificationBell timer={liveTimer} onRestore={() => setTimerModalMinimized(false)} />}
                             <div className="text-right">
                                 <p className="font-semibold">{user.displayName}</p>
                                 <p className="text-xs text-gray-500">{user.email}</p>
                             </div>
                             <img src={user.photoURL} alt="User profile" className="w-10 h-10 rounded-full" />
-                            <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout">
-                                <i className="fas fa-sign-out-alt fa-lg"></i>
-                            </button>
-                            <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings">
-                                <i className="fas fa-cog fa-lg"></i>
-                            </button>
+                            <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout"><i className="fas fa-sign-out-alt fa-lg"></i></button>
+                            <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings"><i className="fas fa-cog fa-lg"></i></button>
                         </div>
                     </header>
-
-                    {liveTimer && <LiveTimerCard timerData={liveTimer} settings={settings} onStop={handleStopLiveTimer} />}
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                         <button disabled={!!liveTimer} onClick={() => { setWorkLogModalMode('live'); setWorkLogModalOpen(true); }} className="p-6 bg-green-500 text-white rounded-lg shadow-lg hover:bg-green-600 transition disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center text-xl font-semibold">
@@ -226,38 +236,45 @@
                         </button>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} user={user} />
+                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} onPrevPage={() => { /* Implement prev logic if needed */ }} isLastPage={isLastPage} />
                     
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal mode={workLogModalMode} settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
-                    {isUploadModalOpen && <UploadModal user={user} onClose={() => setUploadModalOpen(false)} />}
+                    {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
+                    {liveTimer && !isTimerModalMinimized && <LiveTimerModal timerData={liveTimer} onStop={handleStopLiveTimer} onMinimize={() => setTimerModalMinimized(true)} />}
                 </div>
             );
         }
 
         // --- Child Components ---
+        
+        function NotificationBell({ timer, onRestore }) {
+            const [isOpen, setIsOpen] = useState(false);
+            return (
+                <div className="relative">
+                    <button onClick={() => setIsOpen(!isOpen)} className="text-gray-500 hover:text-blue-600 relative">
+                        <i className="fas fa-bell fa-lg"></i>
+                        <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full"></span>
+                    </button>
+                    {isOpen && (
+                        <div className="absolute right-0 mt-2 w-64 bg-white rounded-md shadow-lg z-10">
+                            <div className="p-4">
+                                <p className="font-semibold">Ongoing Task</p>
+                                <p className="text-sm text-gray-600 truncate">{timer.project}: {timer.ticketLink}</p>
+                                <button onClick={() => { onRestore(); setIsOpen(false); }} className="text-blue-600 text-sm mt-2">View Timer</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
 
-        function LiveTimerCard({ timerData, settings, onStop }) {
+        function LiveTimerModal({ timerData, onStop, onMinimize }) {
             const [elapsed, setElapsed] = useState('');
-            const [isConfirming, setConfirming] = useState(false);
-            const confirmationTimeoutRef = useRef(null);
-            const autoStopTimeoutRef = useRef(null);
-
-            const resetTimeouts = useCallback(() => {
-                clearTimeout(confirmationTimeoutRef.current);
-                clearTimeout(autoStopTimeoutRef.current);
-
-                confirmationTimeoutRef.current = setTimeout(() => {
-                    setConfirming(true);
-                    autoStopTimeoutRef.current = setTimeout(() => {
-                        onStop();
-                    }, settings.autoStopTime * 1000);
-                }, settings.confirmationTime * 60 * 1000);
-                 console.log(`Confirmation timer reset. Next check in ${settings.confirmationTime} minutes.`);
-            }, [settings.confirmationTime, settings.autoStopTime, onStop]);
+            const timerRef = useRef(null);
 
             useEffect(() => {
-                const interval = setInterval(() => {
+                timerRef.current = setInterval(() => {
                     const now = new Date();
                     const start = new Date(timerData.startTime);
                     const diff = now - start;
@@ -267,47 +284,28 @@
                     setElapsed(`${hours}:${minutes}:${seconds}`);
                 }, 1000);
 
-                resetTimeouts();
-
-                return () => {
-                    clearInterval(interval);
-                    clearTimeout(confirmationTimeoutRef.current);
-                    clearTimeout(autoStopTimeoutRef.current);
-                };
-            }, [timerData.startTime, resetTimeouts]);
-
-            const handleConfirmContinue = () => {
-                setConfirming(false);
-                resetTimeouts();
-            };
+                return () => clearInterval(timerRef.current);
+            }, [timerData.startTime]);
 
             return (
-                <div className="bg-white p-6 rounded-lg shadow-xl mb-8 border-l-4 border-green-500">
-                    <div className="flex justify-between items-start">
-                        <div>
-                            <p className="font-bold text-xl text-gray-800">{timerData.project}</p>
-                            <p className="text-gray-600">{timerData.ticketLink}</p>
-                            <p className="text-sm text-gray-500 mt-1">{timerData.description}</p>
-                        </div>
-                        <div className="text-right">
-                            <p className={`text-4xl font-mono font-bold text-green-600 timer-pulse`}>{elapsed}</p>
-                            <button onClick={onStop} className="mt-2 bg-red-500 text-white py-2 px-4 rounded-lg hover:bg-red-600 transition text-sm">
-                                <i className="fas fa-stop-circle mr-2"></i>Stop
-                            </button>
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
+                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
+                        <h2 className="text-2xl font-bold mb-2">Timer Running</h2>
+                        <p className="text-gray-600 mb-4">{timerData.project}: {timerData.ticketLink}</p>
+                        <p className="text-6xl font-mono text-center my-8 text-green-600">{elapsed}</p>
+                        <div className="flex justify-between items-center">
+                            <button onClick={onMinimize} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Minimize</button>
+                            <div>
+                                <button className="py-2 px-4 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 mr-2">Pause</button>
+                                <button onClick={onStop} className="py-2 px-4 bg-red-500 text-white rounded-lg hover:bg-red-600">Stop</button>
+                            </div>
                         </div>
                     </div>
-                    {isConfirming && (
-                        <div className="mt-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 rounded">
-                            <h4 className="font-bold text-yellow-800">Are you still working?</h4>
-                            <p className="text-sm text-yellow-700">Timer will stop automatically if you don't respond.</p>
-                            <button onClick={handleConfirmContinue} className="mt-2 bg-green-500 text-white py-1 px-3 rounded text-sm">Yes, continue tracking</button>
-                        </div>
-                    )}
                 </div>
             );
         }
 
-        function WorkLogsTable({ logs, user }) {
+        function WorkLogsTable({ logs, user, onNextPage, onPrevPage, isLastPage }) {
             const [selectedLogs, setSelectedLogs] = useState([]);
 
             const handleSelectAll = (e) => {
@@ -352,6 +350,7 @@
                             </button>
                         )}
                     </div>
+                    {/* Filter UI here */}
                     <div className="overflow-x-auto">
                         <table className="w-full text-left">
                             <thead>
@@ -381,6 +380,9 @@
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                     <div className="flex justify-end mt-4">
+                        <button onClick={onNextPage} disabled={isLastPage} className="bg-blue-500 text-white py-2 px-4 rounded-lg hover:bg-blue-600 disabled:bg-gray-400">Next Page</button>
                     </div>
                 </div>
             );
@@ -572,7 +574,7 @@
             );
         }
 
-        function UploadModal({ user, onClose }) {
+        function UploadModal({ user, currentProjects, onClose }) {
             const [file, setFile] = useState(null);
             const [progress, setProgress] = useState(0);
             const [total, setTotal] = useState(0);
@@ -605,15 +607,15 @@
                     skipEmptyLines: true,
                     complete: async (results) => {
                         const records = results.data;
+                        const newProjects = new Set();
                         setTotal(records.length);
-                        let uploadedCount = 0;
-
+                        
                         for (let i = 0; i < records.length; i++) {
-                            if (isCancelledRef.current) {
-                                console.log("Upload cancelled by user.");
-                                break;
-                            }
+                            if (isCancelledRef.current) break;
                             const record = records[i];
+                            if (record.Project && !currentProjects.includes(record.Project)) {
+                                newProjects.add(record.Project);
+                            }
                             const startTime = parseCustomDate(record['Start Date'], record['Start Time']);
                             const endTime = parseCustomDate(record['End Date'], record['End Time']);
 
@@ -622,16 +624,21 @@
                                     project: record.Project || 'N/A',
                                     ticketLink: record.Task || 'N/A',
                                     description: record.Description || '',
-                                    startTime: startTime,
-                                    endTime: endTime,
+                                    startTime, endTime,
                                     user: { email: record.Email },
                                     uploader: { name: user.displayName, email: user.email },
                                     isLive: false,
                                 };
                                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
                             }
-                            uploadedCount++;
-                            setProgress(uploadedCount);
+                            setProgress(i + 1);
+                        }
+
+                        if (newProjects.size > 0) {
+                            const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
+                            await window.firebase.updateDoc(settingsDocRef, {
+                                projects: window.firebase.arrayUnion(...Array.from(newProjects))
+                            });
                         }
                         setUploading(false);
                     }
@@ -648,7 +655,7 @@
                     <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-2xl font-bold">Upload CSV</h2>
-                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">&times;</button>
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
                         </div>
 
                         {!file && (
