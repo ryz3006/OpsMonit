@@ -154,14 +154,15 @@
                 // Fetch Work Logs for the logged-in user
                 const logsQuery = window.firebase.query(
                     window.firebase.collection(db, "manual_work_reports"), 
-                    window.firebase.where("user.email", "==", user.email),
-                    window.firebase.orderBy("startTime", "desc")
+                    window.firebase.where("user.email", "==", user.email)
                 );
                 const unsubscribeLogs = window.firebase.onSnapshot(logsQuery, (querySnapshot) => {
                     const logs = [];
                     querySnapshot.forEach((doc) => {
                         logs.push({ id: doc.id, ...doc.data() });
                     });
+                    // Sort logs by start time descending on the client-side
+                    logs.sort((a, b) => b.startTime.seconds - a.startTime.seconds);
                     setWorkLogs(logs);
                 });
 
@@ -190,13 +191,6 @@
                 const docRef = window.firebase.doc(db, "manual_work_reports", liveTimer.id);
                 await window.firebase.setDoc(docRef, { endTime: new Date() }, { merge: true });
                 setLiveTimer(null);
-            };
-            
-            const handleFileUpload = (event) => {
-                const file = event.target.files[0];
-                if (!file) return;
-                setUploadModalOpen(true);
-                event.target.value = null; // Reset file input
             };
 
             return (
@@ -227,17 +221,16 @@
                         <button onClick={() => { setWorkLogModalMode('manual'); setWorkLogModalOpen(true); }} className="p-6 bg-blue-500 text-white rounded-lg shadow-lg hover:bg-blue-600 transition flex items-center justify-center text-xl font-semibold">
                             <i className="fas fa-plus-circle mr-3"></i> Add Old Work
                         </button>
-                        <label className="p-6 bg-purple-500 text-white rounded-lg shadow-lg hover:bg-purple-600 transition flex items-center justify-center text-xl font-semibold cursor-pointer">
+                        <button onClick={() => setUploadModalOpen(true)} className="p-6 bg-purple-500 text-white rounded-lg shadow-lg hover:bg-purple-600 transition flex items-center justify-center text-xl font-semibold cursor-pointer">
                             <i className="fas fa-upload mr-3"></i> Upload CSV
-                            <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-                        </label>
+                        </button>
                     </div>
 
                     <WorkLogsTable logs={workLogs} user={user} />
                     
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal mode={workLogModalMode} settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
-                    {isUploadModalOpen && <UploadModal file={event.target.files[0]} user={user} onClose={() => setUploadModalOpen(false)} />}
+                    {isUploadModalOpen && <UploadModal user={user} onClose={() => setUploadModalOpen(false)} />}
                 </div>
             );
         }
@@ -579,17 +572,21 @@
             );
         }
 
-        function UploadModal({ file, user, onClose }) {
+        function UploadModal({ user, onClose }) {
+            const [file, setFile] = useState(null);
             const [progress, setProgress] = useState(0);
             const [total, setTotal] = useState(0);
             const [isUploading, setUploading] = useState(false);
-            const [isCancelled, setCancelled] = useState(false);
+            const isCancelledRef = useRef(false);
+            const fileInputRef = useRef(null);
 
-            useEffect(() => {
-                if (file) {
-                    handleUpload();
+            const handleFileSelect = (event) => {
+                const selectedFile = event.target.files[0];
+                if (selectedFile) {
+                    setFile(selectedFile);
+                    handleUpload(selectedFile);
                 }
-            }, [file]);
+            };
 
             const parseCustomDate = (dateStr, timeStr) => {
                 if (!dateStr || !timeStr) return null;
@@ -600,9 +597,10 @@
                 return isNaN(date.getTime()) ? null : date;
             };
 
-            const handleUpload = () => {
+            const handleUpload = (fileToUpload) => {
+                isCancelledRef.current = false;
                 setUploading(true);
-                Papa.parse(file, {
+                Papa.parse(fileToUpload, {
                     header: true,
                     skipEmptyLines: true,
                     complete: async (results) => {
@@ -611,7 +609,7 @@
                         let uploadedCount = 0;
 
                         for (let i = 0; i < records.length; i++) {
-                            if (isCancelled) {
+                            if (isCancelledRef.current) {
                                 console.log("Upload cancelled by user.");
                                 break;
                             }
@@ -626,8 +624,8 @@
                                     description: record.Description || '',
                                     startTime: startTime,
                                     endTime: endTime,
-                                    user: { email: record.Email }, // Assign work to the email from CSV
-                                    uploader: { name: user.displayName, email: user.email }, // Track who uploaded
+                                    user: { email: record.Email },
+                                    uploader: { name: user.displayName, email: user.email },
                                     isLive: false,
                                 };
                                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
@@ -641,32 +639,46 @@
             };
 
             const handleCancel = () => {
-                setCancelled(true);
-                setUploading(false);
+                isCancelledRef.current = true;
                 onClose();
             };
 
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
                     <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
-                        <h2 className="text-2xl font-bold mb-4">Uploading CSV...</h2>
-                        {isUploading ? (
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-2xl font-bold">Upload CSV</h2>
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">&times;</button>
+                        </div>
+
+                        {!file && (
+                            <div className="text-center">
+                                <p className="mb-4">Select a CSV file to upload work logs.</p>
+                                <input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+                                <button onClick={() => fileInputRef.current.click()} className="py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                    Choose File
+                                </button>
+                            </div>
+                        )}
+
+                        {file && (
                             <div>
+                                <p className="mb-2 text-gray-600">File: {file.name}</p>
                                 <p className="mb-2 text-gray-600">Processing record {progress} of {total}</p>
                                 <div className="w-full bg-gray-200 rounded-full h-4">
-                                    <div className="bg-blue-600 h-4 rounded-full" style={{ width: `${(progress / total) * 100}%` }}></div>
+                                    <div className="bg-blue-600 h-4 rounded-full" style={{ width: total > 0 ? `${(progress / total) * 100}%` : '0%' }}></div>
                                 </div>
-                                <div className="text-center mt-4">
-                                    <button onClick={handleCancel} className="py-2 px-6 bg-red-500 text-white rounded-lg hover:bg-red-600">Cancel</button>
-                                </div>
-                            </div>
-                        ) : (
-                             <div>
-                                <p className="text-lg text-green-600 font-semibold mb-4">Upload complete!</p>
-                                <p>{progress} records processed.</p>
-                                <div className="text-center mt-4">
-                                    <button onClick={onClose} className="py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Close</button>
-                                </div>
+                                {isUploading ? (
+                                    <div className="text-center mt-4">
+                                        <button onClick={handleCancel} className="py-2 px-6 bg-red-500 text-white rounded-lg hover:bg-red-600">Cancel</button>
+                                    </div>
+                                ) : (
+                                    <div className="text-center mt-4">
+                                        <p className="text-lg text-green-600 font-semibold mb-2">Upload complete!</p>
+                                        <p>{progress} records processed.</p>
+                                        <button onClick={onClose} className="mt-2 py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Close</button>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
