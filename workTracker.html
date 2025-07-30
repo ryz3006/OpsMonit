@@ -240,12 +240,12 @@
                         </button>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} />
+                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} onRefresh={fetchWorkLogs} />
                     
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
                     {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
-                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => setActiveTimerModalId(null)} onMinimize={() => setActiveTimerModalId(null)} />}
+                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => { setActiveTimerModalId(null); fetchWorkLogs(); }} onMinimize={() => setActiveTimerModalId(null)} />}
                 </div>
             );
         }
@@ -329,8 +329,11 @@
             const handleStop = async () => {
                 clearInterval(timerRef.current);
                 const finalEndTime = new Date();
+                const finalElapsedTime = elapsed; // Use the state value which is the most up-to-date
+                
                 const finalLog = {
                     ...timerData,
+                    startTime: new Date(finalEndTime.getTime() - finalElapsedTime), // Corrected start time
                     endTime: finalEndTime,
                     isLive: false,
                 };
@@ -374,7 +377,7 @@
             );
         }
 
-        function WorkLogsTable({ logs, user, onNextPage, isLastPage }) {
+        function WorkLogsTable({ logs, user, onNextPage, isLastPage, onRefresh }) {
             const [selectedLogs, setSelectedLogs] = useState([]);
 
             const handleDelete = async (ids) => {
@@ -384,12 +387,14 @@
                     await window.firebase.deleteDoc(window.firebase.doc(db, "manual_work_reports", id));
                 }
                 setSelectedLogs([]);
+                onRefresh(); // Refresh the log list
             };
 
             const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
             const formatDuration = (start, end) => {
                 if (!start || !end) return 'In Progress';
                 const diff = (end.seconds - start.seconds) * 1000;
+                if (diff < 0) return 'Invalid';
                 const hours = Math.floor(diff / 3600000);
                 const minutes = Math.floor((diff % 3600000) / 60000);
                 return `${hours}h ${minutes}m`;
