@@ -128,7 +128,8 @@
         }
 
         function Dashboard({ user, onLogout }) {
-            const [settings, setSettings] = useState({ projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 });
+            const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
+            const [settings, setSettings] = useState(defaultSettings);
             const [workLogs, setWorkLogs] = useState([]);
             
             const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -143,9 +144,10 @@
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
                 const unsubscribeSettings = window.firebase.onSnapshot(settingsDocRef, (docSnap) => {
                     if (docSnap.exists()) {
-                        setSettings(docSnap.data());
+                        // Merge fetched data with defaults to prevent missing fields
+                        setSettings({ ...defaultSettings, ...docSnap.data() });
                     } else {
-                        window.firebase.setDoc(settingsDocRef, { projects: ['Default Project'], customFields: [], confirmationTime: 30, autoStopTime: 60 });
+                        window.firebase.setDoc(settingsDocRef, defaultSettings);
                     }
                 });
 
@@ -379,7 +381,14 @@
             
             const handleSave = async () => {
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
-                await window.firebase.setDoc(settingsDocRef, localSettings);
+                // Sanitize data before saving to prevent undefined values
+                const settingsToSave = {
+                    projects: localSettings.projects || [],
+                    customFields: localSettings.customFields || [],
+                    confirmationTime: Number(localSettings.confirmationTime) || 30,
+                    autoStopTime: Number(localSettings.autoStopTime) || 60,
+                };
+                await window.firebase.setDoc(settingsDocRef, settingsToSave);
                 onClose();
             };
             
