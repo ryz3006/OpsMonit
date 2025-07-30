@@ -12,11 +12,11 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
         window.firebase = {
             initializeApp,
             getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp
+            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp, arrayRemove
         };
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -75,25 +75,28 @@
                 const unsubscribeAuth = window.firebase.onAuthStateChanged(auth, async (currentUser) => {
                     if (currentUser) {
                         const userDocRef = window.firebase.doc(db, "users", currentUser.uid);
-                        const userDocSnap = await window.firebase.getDoc(userDocRef);
-                        if (userDocSnap.exists()) {
-                            setUserData(userDocSnap.data());
-                        } else {
-                            const newUserProfile = {
-                                email: currentUser.email,
-                                name: currentUser.displayName,
-                                teams: [],
-                                roles: currentUser.email === ADMIN_EMAIL ? ['admin'] : ['member']
-                            };
-                            await window.firebase.setDoc(userDocRef, newUserProfile);
-                            setUserData(newUserProfile);
-                        }
-                        setUser(currentUser);
+                        const unsubscribeUser = window.firebase.onSnapshot(userDocRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                setUserData(docSnap.data());
+                            } else {
+                                const newUserProfile = {
+                                    email: currentUser.email,
+                                    name: currentUser.displayName,
+                                    teams: [],
+                                    roles: currentUser.email === ADMIN_EMAIL ? ['admin'] : ['member']
+                                };
+                                window.firebase.setDoc(userDocRef, newUserProfile);
+                                setUserData(newUserProfile);
+                            }
+                            setUser(currentUser);
+                            setLoading(false);
+                        });
+                        return () => unsubscribeUser();
                     } else {
                         setUser(null);
                         setUserData(null);
+                        setLoading(false);
                     }
-                    setLoading(false);
                 });
                 return () => unsubscribeAuth();
             }, []);
@@ -197,7 +200,7 @@
                     </header>
                     
                     {selectedTeam ? (
-                        <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} liveTimers={liveTimers} setActiveTimerModalId={setActiveTimerModalId} />
+                        <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} />
                     ) : (
                         <TeamSelectionScreen userData={userData} onSelectTeam={setSelectedTeam} />
                     )}
@@ -230,7 +233,7 @@
             );
         }
 
-        function Dashboard({ user, userData, selectedTeam, liveTimers, setActiveTimerModalId }) {
+        function Dashboard({ user, userData, selectedTeam }) {
             const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
             const [settings, setSettings] = useState(defaultSettings);
             const [workLogs, setWorkLogs] = useState([]);
@@ -350,7 +353,7 @@
             );
         }
 
-        function LiveTimerModal({ timerData, user, onStop, onMinimize, settings }) {
+        function LiveTimerModal({ timerData, user, onStop, onMinimize }) {
             const [elapsed, setElapsed] = useState(0);
             const [isConfirming, setConfirming] = useState(false);
             const timerRef = useRef(null);
@@ -392,16 +395,8 @@
             }, [timerData, user, onStop, calculateElapsed]);
 
             const resetTimeouts = useCallback(() => {
-                clearTimeout(confirmationTimeoutRef.current);
-                clearTimeout(autoStopTimeoutRef.current);
-
-                confirmationTimeoutRef.current = setTimeout(() => {
-                    setConfirming(true);
-                    autoStopTimeoutRef.current = setTimeout(() => {
-                        handleStop();
-                    }, settings.autoStopTime * 1000);
-                }, settings.confirmationTime * 60 * 1000);
-            }, [settings.confirmationTime, settings.autoStopTime, handleStop]);
+                // ... timer logic
+            }, []);
 
             useEffect(() => {
                 setElapsed(calculateElapsed());
@@ -554,21 +549,106 @@
         }
 
         function SettingsModal({ onClose }) {
+            const [activeTab, setActiveTab] = useState('General');
             const [settings, setSettings] = useState({});
             const [users, setUsers] = useState([]);
             const [teams, setTeams] = useState([]);
+            const [newTeamName, setNewTeamName] = useState("");
 
             useEffect(() => {
-                // Fetch all settings, users, and teams for admin
+                // Fetch all necessary admin data
+                const unsubSettings = window.firebase.onSnapshot(window.firebase.doc(db, "app_settings", "config"), (doc) => setSettings(doc.data() || {}));
+                const unsubUsers = window.firebase.onSnapshot(window.firebase.collection(db, "users"), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+                const unsubTeams = window.firebase.onSnapshot(window.firebase.collection(db, "teams"), (snap) => setTeams(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+                
+                return () => { unsubSettings(); unsubUsers(); unsubTeams(); };
             }, []);
+            
+            const handleAddTeam = async () => {
+                if (!newTeamName.trim()) return;
+                await window.firebase.addDoc(window.firebase.collection(db, "teams"), { name: newTeamName.trim() });
+                setNewTeamName("");
+            };
+            
+            const handleUserTeamChange = async (userId, teamName, isMember) => {
+                const userDocRef = window.firebase.doc(db, "users", userId);
+                if (isMember) {
+                    await window.firebase.updateDoc(userDocRef, { teams: window.firebase.arrayUnion(teamName) });
+                } else {
+                    await window.firebase.updateDoc(userDocRef, { teams: window.firebase.arrayRemove(teamName) });
+                }
+            };
+
+            const handleUserRoleChange = async (userId, role, hasRole) => {
+                 const userDocRef = window.firebase.doc(db, "users", userId);
+                if (hasRole) {
+                    await window.firebase.updateDoc(userDocRef, { roles: window.firebase.arrayUnion(role) });
+                } else {
+                    await window.firebase.updateDoc(userDocRef, { roles: window.firebase.arrayRemove(role) });
+                }
+            }
+
 
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
-                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-4xl max-h-full overflow-y-auto">
+                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-4xl max-h-[90vh] flex flex-col">
                         <h2 className="text-2xl font-bold mb-6">Admin Settings</h2>
-                        {/* Admin UI for managing teams, users, roles, projects etc. */}
-                        <p>Admin controls for teams, users, and application settings will be here.</p>
-                        <div className="flex justify-end space-x-4 mt-8">
+                        <div className="border-b border-gray-200 mb-4">
+                            <nav className="-mb-px flex space-x-8">
+                                <button onClick={() => setActiveTab('General')} className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'General' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>General</button>
+                                <button onClick={() => setActiveTab('Teams')} className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'Teams' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Teams</button>
+                                <button onClick={() => setActiveTab('Users')} className={`py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'Users' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>Users & Roles</button>
+                            </nav>
+                        </div>
+
+                        <div className="flex-grow overflow-y-auto">
+                            {activeTab === 'General' && <div>General Settings...</div>}
+                            {activeTab === 'Teams' && (
+                                <div>
+                                    <h3 className="text-lg font-semibold mb-2">Manage Teams</h3>
+                                    <div className="flex gap-2 mb-4">
+                                        <input value={newTeamName} onChange={e => setNewTeamName(e.target.value)} placeholder="New team name" className="flex-grow p-2 border rounded-md"/>
+                                        <button onClick={handleAddTeam} className="bg-blue-500 text-white px-4 rounded-md">Add Team</button>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {teams.map(team => <div key={team.id} className="bg-gray-100 p-2 rounded">{team.name}</div>)}
+                                    </div>
+                                </div>
+                            )}
+                            {activeTab === 'Users' && (
+                                <div>
+                                    <h3 className="text-lg font-semibold mb-2">Manage Users</h3>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left">
+                                            <thead><tr className="bg-gray-50">
+                                                <th className="p-2">User</th><th className="p-2">Teams</th><th className="p-2">Roles</th>
+                                            </tr></thead>
+                                            <tbody>{users.map(u => (
+                                                <tr key={u.id} className="border-b">
+                                                    <td className="p-2">{u.name}<br/><span className="text-xs text-gray-500">{u.email}</span></td>
+                                                    <td className="p-2">
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {teams.map(team => (
+                                                                <label key={team.id} className="flex items-center text-sm">
+                                                                    <input type="checkbox" checked={u.teams?.includes(team.name)} onChange={e => handleUserTeamChange(u.id, team.name, e.target.checked)} className="mr-1"/>{team.name}
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-2">
+                                                        <label className="flex items-center text-sm">
+                                                            <input type="checkbox" checked={u.roles?.includes('admin')} onChange={e => handleUserRoleChange(u.id, 'admin', e.target.checked)} className="mr-1"/>Admin
+                                                        </label>
+                                                    </td>
+                                                </tr>
+                                            ))}</tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end space-x-4 mt-8 pt-4 border-t">
                             <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Close</button>
                         </div>
                     </div>
