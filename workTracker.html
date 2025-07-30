@@ -12,11 +12,11 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
         window.firebase = {
             initializeApp,
             getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion
+            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc, limit, startAfter, getDocs, updateDoc, arrayUnion, serverTimestamp
         };
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -134,15 +134,12 @@
             const [lastVisible, setLastVisible] = useState(null);
             const [isLastPage, setIsLastPage] = useState(false);
             
-            const [filters, setFilters] = useState({ project: '', ticket: '', startDate: '' });
-            
             const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
             const [isUploadModalOpen, setUploadModalOpen] = useState(false);
-            const [workLogModalMode, setWorkLogModalMode] = useState('live');
-
-            const [liveTimer, setLiveTimer] = useState(null);
-            const [isTimerModalMinimized, setTimerModalMinimized] = useState(false);
+            
+            const [liveTimers, setLiveTimers] = useState([]);
+            const [activeTimerModalId, setActiveTimerModalId] = useState(null);
 
             const fetchWorkLogs = useCallback(async (next = false) => {
                 let q = window.firebase.query(
@@ -155,17 +152,23 @@
                 if (next && lastVisible) {
                     q = window.firebase.query(q, window.firebase.startAfter(lastVisible));
                 }
-
-                const documentSnapshots = await window.firebase.getDocs(q);
                 
-                const logs = [];
-                documentSnapshots.forEach((doc) => {
-                    logs.push({ id: doc.id, ...doc.data() });
-                });
-                
-                setWorkLogs(logs);
-                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                setIsLastPage(documentSnapshots.docs.length < 25);
+                try {
+                    const documentSnapshots = await window.firebase.getDocs(q);
+                    const logs = [];
+                    documentSnapshots.forEach((doc) => {
+                        logs.push({ id: doc.id, ...doc.data() });
+                    });
+                    
+                    setWorkLogs(logs);
+                    setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                    setIsLastPage(documentSnapshots.docs.length < 25);
+                } catch(e) {
+                    console.error("Error fetching work logs:", e);
+                    if (e.code === 'failed-precondition') {
+                        alert("A database index is required for this query. Please follow the link in the console to create it.");
+                    }
+                }
             }, [user, lastVisible]);
 
 
@@ -180,40 +183,41 @@
                     }
                 });
 
+                const liveTimersQuery = window.firebase.query(
+                    window.firebase.collection(db, `live_timers/${user.uid}/timers`)
+                );
+                const unsubscribeLiveTimers = window.firebase.onSnapshot(liveTimersQuery, (snapshot) => {
+                    const timers = [];
+                    snapshot.forEach(doc => timers.push({ id: doc.id, ...doc.data() }));
+                    setLiveTimers(timers);
+                });
+
                 fetchWorkLogs();
 
                 return () => {
                     unsubscribeSettings();
+                    unsubscribeLiveTimers();
                 };
             }, [user]);
 
             const handleSaveWorkLog = async (logData) => {
-                try {
-                    const docRef = await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
-                    if (logData.isLive) {
-                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.getTime(), isPaused: false, pausedDuration: 0 });
-                    }
-                    setWorkLogModalOpen(false);
-                    fetchWorkLogs(); // Refresh logs
-                } catch (error) {
-                    console.error("Error saving work log: ", error);
+                if (logData.isLive) {
+                    await window.firebase.addDoc(window.firebase.collection(db, `live_timers/${user.uid}/timers`), logData);
+                } else {
+                    await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
+                    fetchWorkLogs();
                 }
+                setWorkLogModalOpen(false);
             };
 
-            const handleStopLiveTimer = async () => {
-                if (!liveTimer || !liveTimer.id) return;
-                const docRef = window.firebase.doc(db, "manual_work_reports", liveTimer.id);
-                await window.firebase.updateDoc(docRef, { endTime: new Date() });
-                setLiveTimer(null);
-                fetchWorkLogs();
-            };
+            const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
 
             return (
                 <div className="container mx-auto p-4 md:p-8 font-sans">
                     <header className="flex justify-between items-center mb-8">
                         <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
                         <div className="flex items-center space-x-4">
-                            {liveTimer && <NotificationBell timer={liveTimer} onRestore={() => setTimerModalMinimized(false)} />}
+                            <NotificationBell timers={liveTimers} onRestore={setActiveTimerModalId} />
                             <div className="text-right">
                                 <p className="font-semibold">{user.displayName}</p>
                                 <p className="text-xs text-gray-500">{user.email}</p>
@@ -225,10 +229,10 @@
                     </header>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                        <button disabled={!!liveTimer} onClick={() => { setWorkLogModalMode('live'); setWorkLogModalOpen(true); }} className="p-6 bg-green-500 text-white rounded-lg shadow-lg hover:bg-green-600 transition disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center text-xl font-semibold">
-                            <i className="fas fa-play-circle mr-3"></i> Start Live Work
+                        <button onClick={() => setWorkLogModalOpen(true)} className="p-6 bg-green-500 text-white rounded-lg shadow-lg hover:bg-green-600 transition flex items-center justify-center text-xl font-semibold">
+                            <i className="fas fa-play-circle mr-3"></i> Start New Work
                         </button>
-                        <button onClick={() => { setWorkLogModalMode('manual'); setWorkLogModalOpen(true); }} className="p-6 bg-blue-500 text-white rounded-lg shadow-lg hover:bg-blue-600 transition flex items-center justify-center text-xl font-semibold">
+                        <button onClick={() => { /* Logic for old work */ }} className="p-6 bg-blue-500 text-white rounded-lg shadow-lg hover:bg-blue-600 transition flex items-center justify-center text-xl font-semibold">
                             <i className="fas fa-plus-circle mr-3"></i> Add Old Work
                         </button>
                         <button onClick={() => setUploadModalOpen(true)} className="p-6 bg-purple-500 text-white rounded-lg shadow-lg hover:bg-purple-600 transition flex items-center justify-center text-xl font-semibold cursor-pointer">
@@ -236,32 +240,41 @@
                         </button>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} onPrevPage={() => { /* Implement prev logic if needed */ }} isLastPage={isLastPage} />
+                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} />
                     
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
-                    {isWorkLogModalOpen && <WorkLogModal mode={workLogModalMode} settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
+                    {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
                     {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
-                    {liveTimer && !isTimerModalMinimized && <LiveTimerModal timerData={liveTimer} onStop={handleStopLiveTimer} onMinimize={() => setTimerModalMinimized(true)} />}
+                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => setActiveTimerModalId(null)} onMinimize={() => setActiveTimerModalId(null)} />}
                 </div>
             );
         }
 
         // --- Child Components ---
         
-        function NotificationBell({ timer, onRestore }) {
+        function NotificationBell({ timers, onRestore }) {
             const [isOpen, setIsOpen] = useState(false);
+            if (timers.length === 0) return null;
+
             return (
                 <div className="relative">
                     <button onClick={() => setIsOpen(!isOpen)} className="text-gray-500 hover:text-blue-600 relative">
                         <i className="fas fa-bell fa-lg"></i>
-                        <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full"></span>
+                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">{timers.length}</span>
                     </button>
                     {isOpen && (
-                        <div className="absolute right-0 mt-2 w-64 bg-white rounded-md shadow-lg z-10">
-                            <div className="p-4">
-                                <p className="font-semibold">Ongoing Task</p>
-                                <p className="text-sm text-gray-600 truncate">{timer.project}: {timer.ticketLink}</p>
-                                <button onClick={() => { onRestore(); setIsOpen(false); }} className="text-blue-600 text-sm mt-2">View Timer</button>
+                        <div className="absolute right-0 mt-2 w-72 bg-white rounded-md shadow-lg z-10">
+                            <div className="p-2 font-semibold border-b">Ongoing Tasks</div>
+                            <div className="p-2 max-h-64 overflow-y-auto">
+                                {timers.map(timer => (
+                                    <div key={timer.id} className="mb-2 p-2 hover:bg-gray-100 rounded">
+                                        <p className="font-semibold text-sm truncate">{timer.project}: {timer.ticketLink}</p>
+                                        <div className="flex justify-between items-center">
+                                            <span className={`text-xs ${timer.isPaused ? 'text-yellow-600' : 'text-green-600'}`}>{timer.isPaused ? 'Paused' : 'Running'}</span>
+                                            <button onClick={() => { onRestore(timer.id); setIsOpen(false); }} className="text-blue-600 text-sm">View</button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     )}
@@ -269,35 +282,90 @@
             );
         }
 
-        function LiveTimerModal({ timerData, onStop, onMinimize }) {
-            const [elapsed, setElapsed] = useState('');
+        function LiveTimerModal({ timerData, user, onStop, onMinimize }) {
+            const [elapsed, setElapsed] = useState(0);
             const timerRef = useRef(null);
 
             useEffect(() => {
-                timerRef.current = setInterval(() => {
-                    const now = new Date();
-                    const start = new Date(timerData.startTime);
-                    const diff = now - start;
-                    const hours = Math.floor(diff / 3600000).toString().padStart(2, '0');
-                    const minutes = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
-                    const seconds = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
-                    setElapsed(`${hours}:${minutes}:${seconds}`);
-                }, 1000);
+                const calculateElapsed = () => {
+                    if (timerData.isPaused) {
+                        return timerData.pausedDuration;
+                    }
+                    const now = Date.now();
+                    const start = timerData.startTime.toMillis();
+                    const pauseTime = timerData.pausedDuration || 0;
+                    return (now - start) - pauseTime;
+                };
+
+                setElapsed(calculateElapsed());
+
+                if (!timerData.isPaused) {
+                    timerRef.current = setInterval(() => setElapsed(calculateElapsed()), 1000);
+                }
 
                 return () => clearInterval(timerRef.current);
-            }, [timerData.startTime]);
+            }, [timerData]);
+
+            const handlePause = async () => {
+                clearInterval(timerRef.current);
+                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
+                await window.firebase.updateDoc(timerDocRef, {
+                    isPaused: true,
+                    lastPausedTime: window.firebase.serverTimestamp()
+                });
+            };
+            
+            const handleResume = async () => {
+                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
+                const pauseDuration = Date.now() - timerData.lastPausedTime.toMillis();
+                await window.firebase.updateDoc(timerDocRef, {
+                    isPaused: false,
+                    pausedDuration: (timerData.pausedDuration || 0) + pauseDuration,
+                    lastPausedTime: null
+                });
+            };
+
+            const handleStop = async () => {
+                clearInterval(timerRef.current);
+                const finalEndTime = new Date();
+                const finalLog = {
+                    ...timerData,
+                    endTime: finalEndTime,
+                    isLive: false,
+                };
+                delete finalLog.id;
+                delete finalLog.isPaused;
+                delete finalLog.pausedDuration;
+                delete finalLog.lastPausedTime;
+
+                await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), finalLog);
+                await window.firebase.deleteDoc(window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id));
+                onStop();
+            };
+
+            const formatTime = (ms) => {
+                const totalSeconds = Math.floor(ms / 1000);
+                const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+                const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+                const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+                return `${hours}:${minutes}:${seconds}`;
+            };
 
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
                     <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
                         <h2 className="text-2xl font-bold mb-2">Timer Running</h2>
                         <p className="text-gray-600 mb-4">{timerData.project}: {timerData.ticketLink}</p>
-                        <p className="text-6xl font-mono text-center my-8 text-green-600">{elapsed}</p>
+                        <p className="text-6xl font-mono text-center my-8 text-green-600">{formatTime(elapsed)}</p>
                         <div className="flex justify-between items-center">
                             <button onClick={onMinimize} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Minimize</button>
                             <div>
-                                <button className="py-2 px-4 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 mr-2">Pause</button>
-                                <button onClick={onStop} className="py-2 px-4 bg-red-500 text-white rounded-lg hover:bg-red-600">Stop</button>
+                                {timerData.isPaused ? (
+                                    <button onClick={handleResume} className="py-2 px-4 bg-green-500 text-white rounded-lg hover:bg-green-600 mr-2">Resume</button>
+                                ) : (
+                                    <button onClick={handlePause} className="py-2 px-4 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 mr-2">Pause</button>
+                                )}
+                                <button onClick={handleStop} className="py-2 px-4 bg-red-500 text-white rounded-lg hover:bg-red-600">Stop</button>
                             </div>
                         </div>
                     </div>
@@ -305,22 +373,8 @@
             );
         }
 
-        function WorkLogsTable({ logs, user, onNextPage, onPrevPage, isLastPage }) {
+        function WorkLogsTable({ logs, user, onNextPage, isLastPage }) {
             const [selectedLogs, setSelectedLogs] = useState([]);
-
-            const handleSelectAll = (e) => {
-                if (e.target.checked) {
-                    setSelectedLogs(logs.map(log => log.id));
-                } else {
-                    setSelectedLogs([]);
-                }
-            };
-
-            const handleSelectOne = (id) => {
-                setSelectedLogs(prev => 
-                    prev.includes(id) ? prev.filter(logId => logId !== id) : [...prev, id]
-                );
-            };
 
             const handleDelete = async (ids) => {
                 if (!window.confirm(`Are you sure you want to delete ${ids.length} log(s)?`)) return;
@@ -350,12 +404,11 @@
                             </button>
                         )}
                     </div>
-                    {/* Filter UI here */}
                     <div className="overflow-x-auto">
                         <table className="w-full text-left">
                             <thead>
                                 <tr className="bg-gray-50 border-b">
-                                    <th className="p-3 w-4"><input type="checkbox" onChange={handleSelectAll} checked={selectedLogs.length === logs.length && logs.length > 0} /></th>
+                                    <th className="p-3 w-4"><input type="checkbox" onChange={(e) => setSelectedLogs(e.target.checked ? logs.map(l => l.id) : [])} /></th>
                                     <th className="p-3">Project</th>
                                     <th className="p-3">Ticket/Task</th>
                                     <th className="p-3">Start Time</th>
@@ -367,7 +420,7 @@
                             <tbody>
                                 {logs.map(log => (
                                     <tr key={log.id} className={`border-b ${selectedLogs.includes(log.id) ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
-                                        <td className="p-3"><input type="checkbox" checked={selectedLogs.includes(log.id)} onChange={() => handleSelectOne(log.id)} /></td>
+                                        <td className="p-3"><input type="checkbox" checked={selectedLogs.includes(log.id)} onChange={() => setSelectedLogs(p => p.includes(log.id) ? p.filter(id => id !== log.id) : [...p, log.id])} /></td>
                                         <td className="p-3 font-medium">{log.project}</td>
                                         <td className="p-3">{log.ticketLink}</td>
                                         <td className="p-3">{formatTime(log.startTime)}</td>
@@ -473,101 +526,52 @@
             );
         }
 
-        function WorkLogModal({ mode, settings, user, onSave, onClose }) {
+        function WorkLogModal({ settings, user, onSave, onClose }) {
             const [formData, setFormData] = useState({
                 project: settings.projects[0] || '',
                 ticketLink: '',
                 description: '',
-                startTime: '',
-                endTime: '',
             });
-
-            useEffect(() => {
-                const initialCustomFields = {};
-                (settings.customFields || []).forEach(field => {
-                    initialCustomFields[field.label] = '';
-                });
-                setFormData(fd => ({...fd, ...initialCustomFields}));
-            }, [settings.customFields]);
-
-            const handleChange = (e) => {
-                const { name, value } = e.target;
-                setFormData(prev => ({ ...prev, [name]: value }));
-            };
-
-            const handleCustomFieldChange = (label, value) => {
-                setFormData(prev => ({ ...prev, [label]: value }));
-            };
 
             const handleSubmit = (e) => {
                 e.preventDefault();
                 const now = new Date();
                 const logData = {
-                    project: formData.project,
-                    ticketLink: formData.ticketLink,
-                    description: formData.description,
+                    ...formData,
                     user: { uid: user.uid, name: user.displayName, email: user.email },
-                    isLive: mode === 'live',
-                    startTime: mode === 'live' ? now : new Date(formData.startTime),
-                    endTime: mode === 'live' ? null : new Date(formData.endTime),
+                    isLive: true,
+                    startTime: now,
+                    endTime: null,
+                    isPaused: false,
+                    pausedDuration: 0,
+                    lastPausedTime: null,
                 };
-                
-                (settings.customFields || []).forEach(field => {
-                    if(formData[field.label]) {
-                        logData[field.label] = formData[field.label];
-                    }
-                });
-
                 onSave(logData);
             };
 
             return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
                     <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
-                        <h2 className="text-2xl font-bold mb-6">{mode === 'live' ? 'Start New Work' : 'Add Old Work Log'}</h2>
-                        
+                        <h2 className="text-2xl font-bold mb-6">Start New Work</h2>
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-gray-700">Project</label>
-                                <select name="project" value={formData.project} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required>
+                                <select name="project" value={formData.project} onChange={(e) => setFormData(p => ({...p, project: e.target.value}))} className="mt-1 block w-full p-2 border rounded-md" required>
                                     {settings.projects.map(p => <option key={p} value={p}>{p}</option>)}
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700">Ticket Link / Task Name</label>
-                                <input type="text" name="ticketLink" value={formData.ticketLink} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
+                                <input type="text" name="ticketLink" value={formData.ticketLink} onChange={(e) => setFormData(p => ({...p, ticketLink: e.target.value}))} className="mt-1 block w-full p-2 border rounded-md" required />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700">Description</label>
-                                <textarea name="description" value={formData.description} onChange={handleChange} rows="3" className="mt-1 block w-full p-2 border rounded-md"></textarea>
+                                <textarea name="description" value={formData.description} onChange={(e) => setFormData(p => ({...p, description: e.target.value}))} rows="3" className="mt-1 block w-full p-2 border rounded-md"></textarea>
                             </div>
-
-                            {(settings.customFields || []).map(field => (
-                                <div key={field.label}>
-                                    <label className="block text-sm font-medium text-gray-700">{field.label}</label>
-                                    <input type="text" value={formData[field.label] || ''} onChange={(e) => handleCustomFieldChange(field.label, e.target.value)} className="mt-1 block w-full p-2 border rounded-md" />
-                                </div>
-                            ))}
-
-                            {mode === 'manual' && (
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700">Start Time</label>
-                                        <input type="datetime-local" name="startTime" value={formData.startTime} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700">End Time</label>
-                                        <input type="datetime-local" name="endTime" value={formData.endTime} onChange={handleChange} className="mt-1 block w-full p-2 border rounded-md" required />
-                                    </div>
-                                </div>
-                            )}
                         </div>
-
                         <div className="flex justify-end space-x-4 mt-8">
                             <button type="button" onClick={onClose} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Cancel</button>
-                            <button type="submit" className="py-2 px-6 bg-green-600 text-white rounded-lg hover:bg-green-700">
-                                {mode === 'live' ? 'Start Timer' : 'Save Log'}
-                            </button>
+                            <button type="submit" className="py-2 px-6 bg-green-600 text-white rounded-lg hover:bg-green-700">Start Timer</button>
                         </div>
                     </form>
                 </div>
