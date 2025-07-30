@@ -666,25 +666,36 @@
                                             <thead><tr className="bg-gray-50">
                                                 <th className="p-2">User</th><th className="p-2">Teams</th><th className="p-2">Roles</th>
                                             </tr></thead>
-                                            <tbody>{users.map(u => (
-                                                <tr key={u.id} className="border-b">
-                                                    <td className="p-2">{u.name}<br/><span className="text-xs text-gray-500">{u.email}</span></td>
-                                                    <td className="p-2">
-                                                        <div className="flex flex-wrap gap-1">
-                                                            {teams.map(team => (
-                                                                <label key={team.id} className="flex items-center text-sm">
-                                                                    <input type="checkbox" checked={u.teams?.includes(team.name)} onChange={e => handleUserTeamChange(u.id, team.name, e.target.checked)} className="mr-1"/>{team.name}
-                                                                </label>
-                                                            ))}
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-2">
-                                                        <label className="flex items-center text-sm">
-                                                            <input type="checkbox" checked={u.roles?.includes('admin')} onChange={e => handleUserRoleChange(u.id, 'admin', e.target.checked)} className="mr-1"/>Admin
-                                                        </label>
-                                                    </td>
-                                                </tr>
-                                            ))}</tbody>
+                                            <tbody>{users.map(u => {
+                                                const isPrimaryAdmin = u.email === ADMIN_EMAIL;
+                                                return (
+                                                    <tr key={u.id} className="border-b">
+                                                        <td className="p-2">{u.name}<br/><span className="text-xs text-gray-500">{u.email}</span></td>
+                                                        <td className="p-2">
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {teams.map(team => (
+                                                                    <label key={team.id} className="flex items-center text-sm">
+                                                                        <input type="checkbox" checked={u.teams?.includes(team.name)} onChange={e => handleUserTeamChange(u.id, team.name, e.target.checked)} className="mr-1"/>{team.name}
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-2">
+                                                            <label className={`flex items-center text-sm ${isPrimaryAdmin ? 'cursor-not-allowed' : ''}`}>
+                                                                <input 
+                                                                    type="checkbox" 
+                                                                    checked={u.roles?.includes('admin')} 
+                                                                    onChange={e => handleUserRoleChange(u.id, 'admin', e.target.checked)} 
+                                                                    className="mr-1"
+                                                                    disabled={isPrimaryAdmin}
+                                                                />
+                                                                Admin
+                                                            </label>
+                                                            {isPrimaryAdmin && <span className="text-xs text-gray-400 ml-2">(Primary)</span>}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}</tbody>
                                         </table>
                                     </div>
                                 </div>
