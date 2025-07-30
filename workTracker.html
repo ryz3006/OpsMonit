@@ -53,6 +53,8 @@
             measurementId: "G-36S66F65D6"
         };
         
+        const ADMIN_EMAIL = "riyas.siddikk@6dtech.co.in";
+        
         let app, auth, db;
         try {
             app = window.firebase.initializeApp(firebaseConfig);
@@ -65,12 +67,34 @@
         // --- Main App Component ---
         function App() {
             const [user, setUser] = useState(null);
+            const [userData, setUserData] = useState(null);
             const [loading, setLoading] = useState(true);
             const [authError, setAuthError] = useState(null);
-            
+            const [selectedTeam, setSelectedTeam] = useState(null);
+
             useEffect(() => {
-                const unsubscribeAuth = window.firebase.onAuthStateChanged(auth, (currentUser) => {
-                    setUser(currentUser);
+                const unsubscribeAuth = window.firebase.onAuthStateChanged(auth, async (currentUser) => {
+                    if (currentUser) {
+                        const userDocRef = window.firebase.doc(db, "users", currentUser.uid);
+                        const userDocSnap = await window.firebase.getDoc(userDocRef);
+                        if (userDocSnap.exists()) {
+                            setUserData(userDocSnap.data());
+                        } else {
+                            // Create user profile on first login
+                            const newUserProfile = {
+                                email: currentUser.email,
+                                name: currentUser.displayName,
+                                teams: [],
+                                roles: currentUser.email === ADMIN_EMAIL ? ['admin'] : ['member']
+                            };
+                            await window.firebase.setDoc(userDocRef, newUserProfile);
+                            setUserData(newUserProfile);
+                        }
+                        setUser(currentUser);
+                    } else {
+                        setUser(null);
+                        setUserData(null);
+                    }
                     setLoading(false);
                 });
                 return () => unsubscribeAuth();
@@ -79,8 +103,14 @@
             const handleGoogleSignIn = async () => {
                 const provider = new window.firebase.GoogleAuthProvider();
                 try {
-                    await window.firebase.signInWithPopup(auth, provider);
-                    setAuthError(null);
+                    const result = await window.firebase.signInWithPopup(auth, provider);
+                    const email = result.user.email;
+                    if (!email.endsWith('@6dtech.co.in')) {
+                        setAuthError("Access denied. Only members with a '6dtech.co.in' email are allowed.");
+                        await window.firebase.signOut(auth);
+                    } else {
+                        setAuthError(null);
+                    }
                 } catch (error) {
                     console.error("Google Sign-in failed", error);
                     setAuthError(`Google Sign-in failed: ${error.message}`);
@@ -90,6 +120,7 @@
             const handleLogout = async () => {
                 try {
                     await window.firebase.signOut(auth);
+                    setSelectedTeam(null);
                 } catch (error) {
                     console.error("Logout failed", error);
                 }
@@ -98,11 +129,15 @@
 
             if (loading) return <div className="text-center p-10">Loading Application...</div>;
 
-            return (
-                <div>
-                    {user ? <Dashboard user={user} onLogout={handleLogout} /> : <LoginScreen onLogin={handleGoogleSignIn} error={authError} />}
-                </div>
-            );
+            if (!user) {
+                return <LoginScreen onLogin={handleGoogleSignIn} error={authError} />;
+            }
+
+            if (!selectedTeam) {
+                return <TeamSelectionScreen userData={userData} onSelectTeam={setSelectedTeam} onLogout={handleLogout} />;
+            }
+            
+            return <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} onLogout={handleLogout} />;
         }
         
         // --- Screens ---
@@ -126,8 +161,36 @@
                 </div>
             );
         }
+        
+        function TeamSelectionScreen({ userData, onSelectTeam, onLogout }) {
+             if (!userData || !userData.teams || userData.teams.length === 0) {
+                return (
+                     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
+                        <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full">
+                            <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
+                            <p className="text-gray-600 mt-4">You are not assigned to any teams yet. Please contact an administrator.</p>
+                             <button onClick={onLogout} className="mt-6 w-full bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Logout</button>
+                        </div>
+                    </div>
+                );
+            }
+            
+            return (
+                <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
+                    <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full">
+                        <h1 className="text-2xl font-bold text-gray-800">Select a Team</h1>
+                        <p className="text-gray-600 mt-2 mb-6">Choose a team to view its dashboard.</p>
+                        <select onChange={(e) => onSelectTeam(e.target.value)} defaultValue="" className="w-full p-3 border rounded-lg mb-4">
+                            <option value="" disabled>-- Select a team --</option>
+                            {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
+                        </select>
+                         <button onClick={onLogout} className="mt-2 w-full bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-lg hover:bg-gray-300">Logout</button>
+                    </div>
+                </div>
+            );
+        }
 
-        function Dashboard({ user, onLogout }) {
+        function Dashboard({ user, userData, selectedTeam, onLogout }) {
             const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
             const [settings, setSettings] = useState(defaultSettings);
             const [workLogs, setWorkLogs] = useState([]);
@@ -211,11 +274,15 @@
             };
 
             const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
+            const isAdmin = userData?.roles?.includes('admin');
 
             return (
                 <div className="container mx-auto p-4 md:p-8 font-sans">
                     <header className="flex justify-between items-center mb-8">
-                        <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-800">Work Tracker</h1>
+                            <p className="text-gray-500">Team: <span className="font-semibold">{selectedTeam}</span></p>
+                        </div>
                         <div className="flex items-center space-x-4">
                             <NotificationBell timers={liveTimers} onRestore={setActiveTimerModalId} />
                             <div className="text-right">
@@ -224,7 +291,7 @@
                             </div>
                             <img src={user.photoURL} alt="User profile" className="w-10 h-10 rounded-full" />
                             <button onClick={onLogout} className="text-gray-500 hover:text-red-600" title="Logout"><i className="fas fa-sign-out-alt fa-lg"></i></button>
-                            <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings"><i className="fas fa-cog fa-lg"></i></button>
+                            {isAdmin && <button onClick={() => setSettingsModalOpen(true)} className="text-gray-500 hover:text-blue-600" title="Settings"><i className="fas fa-cog fa-lg"></i></button>}
                         </div>
                     </header>
 
@@ -245,7 +312,7 @@
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
                     {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} onClose={() => setUploadModalOpen(false)} />}
-                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => { setActiveTimerModalId(null); fetchWorkLogs(); }} onMinimize={() => setActiveTimerModalId(null)} />}
+                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => { setActiveTimerModalId(null); fetchWorkLogs(); }} onMinimize={() => setActiveTimerModalId(null)} settings={settings} />}
                 </div>
             );
         }
@@ -282,58 +349,34 @@
             );
         }
 
-        function LiveTimerModal({ timerData, user, onStop, onMinimize }) {
+        function LiveTimerModal({ timerData, user, onStop, onMinimize, settings }) {
             const [elapsed, setElapsed] = useState(0);
+            const [isConfirming, setConfirming] = useState(false);
             const timerRef = useRef(null);
+            const confirmationTimeoutRef = useRef(null);
+            const autoStopTimeoutRef = useRef(null);
 
-            useEffect(() => {
-                const calculateElapsed = () => {
-                    if (timerData.isPaused) {
-                        return timerData.totalElapsedTime || 0;
-                    }
-                    const now = Date.now();
-                    const resumeTime = timerData.lastResumedTime?.toMillis() || timerData.startTime.toMillis();
-                    const baseElapsedTime = timerData.totalElapsedTime || 0;
-                    return baseElapsedTime + (now - resumeTime);
-                };
-
-                setElapsed(calculateElapsed());
-
-                if (!timerData.isPaused) {
-                    timerRef.current = setInterval(() => setElapsed(calculateElapsed()), 1000);
+            const calculateElapsed = useCallback(() => {
+                if (timerData.isPaused) {
+                    return timerData.totalElapsedTime || 0;
                 }
-
-                return () => clearInterval(timerRef.current);
-            }, [timerData]);
-
-            const handlePause = async () => {
-                clearInterval(timerRef.current);
-                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
                 const now = Date.now();
                 const resumeTime = timerData.lastResumedTime?.toMillis() || timerData.startTime.toMillis();
-                const newElapsedTime = (timerData.totalElapsedTime || 0) + (now - resumeTime);
-                await window.firebase.updateDoc(timerDocRef, {
-                    isPaused: true,
-                    totalElapsedTime: newElapsedTime
-                });
-            };
+                const baseElapsedTime = timerData.totalElapsedTime || 0;
+                return baseElapsedTime + (now - resumeTime);
+            }, [timerData]);
             
-            const handleResume = async () => {
-                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
-                await window.firebase.updateDoc(timerDocRef, {
-                    isPaused: false,
-                    lastResumedTime: window.firebase.serverTimestamp()
-                });
-            };
-
-            const handleStop = async () => {
+            const handleStop = useCallback(async () => {
                 clearInterval(timerRef.current);
+                clearTimeout(confirmationTimeoutRef.current);
+                clearTimeout(autoStopTimeoutRef.current);
+
                 const finalEndTime = new Date();
-                const finalElapsedTime = elapsed; // Use the state value which is the most up-to-date
+                const finalElapsedTime = calculateElapsed();
                 
                 const finalLog = {
                     ...timerData,
-                    startTime: new Date(finalEndTime.getTime() - finalElapsedTime), // Corrected start time
+                    startTime: new Date(finalEndTime.getTime() - finalElapsedTime),
                     endTime: finalEndTime,
                     isLive: false,
                 };
@@ -345,6 +388,59 @@
                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), finalLog);
                 await window.firebase.deleteDoc(window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id));
                 onStop();
+            }, [timerData, user, onStop, calculateElapsed]);
+
+            const resetTimeouts = useCallback(() => {
+                clearTimeout(confirmationTimeoutRef.current);
+                clearTimeout(autoStopTimeoutRef.current);
+
+                confirmationTimeoutRef.current = setTimeout(() => {
+                    setConfirming(true);
+                    autoStopTimeoutRef.current = setTimeout(() => {
+                        handleStop();
+                    }, settings.autoStopTime * 1000);
+                }, settings.confirmationTime * 60 * 1000);
+            }, [settings.confirmationTime, settings.autoStopTime, handleStop]);
+
+            useEffect(() => {
+                setElapsed(calculateElapsed());
+
+                if (!timerData.isPaused) {
+                    timerRef.current = setInterval(() => setElapsed(calculateElapsed()), 1000);
+                    resetTimeouts();
+                }
+
+                return () => {
+                    clearInterval(timerRef.current);
+                    clearTimeout(confirmationTimeoutRef.current);
+                    clearTimeout(autoStopTimeoutRef.current);
+                };
+            }, [timerData, calculateElapsed, resetTimeouts]);
+
+            const handlePause = async () => {
+                clearInterval(timerRef.current);
+                clearTimeout(confirmationTimeoutRef.current);
+                clearTimeout(autoStopTimeoutRef.current);
+
+                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
+                await window.firebase.updateDoc(timerDocRef, {
+                    isPaused: true,
+                    totalElapsedTime: elapsed
+                });
+            };
+            
+            const handleResume = async () => {
+                const timerDocRef = window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id);
+                await window.firebase.updateDoc(timerDocRef, {
+                    isPaused: false,
+                    lastResumedTime: window.firebase.serverTimestamp()
+                });
+                resetTimeouts();
+            };
+            
+            const handleConfirmContinue = () => {
+                setConfirming(false);
+                resetTimeouts();
             };
 
             const formatTime = (ms) => {
@@ -361,6 +457,15 @@
                         <h2 className="text-2xl font-bold mb-2">Timer Running</h2>
                         <p className="text-gray-600 mb-4">{timerData.project}: {timerData.ticketLink}</p>
                         <p className="text-6xl font-mono text-center my-8 text-green-600">{formatTime(elapsed)}</p>
+                        
+                        {isConfirming && (
+                            <div className="mb-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 rounded">
+                                <h4 className="font-bold text-yellow-800">Are you still working?</h4>
+                                <p className="text-sm text-yellow-700">Timer will stop automatically if you don't respond.</p>
+                                <button onClick={handleConfirmContinue} className="mt-2 bg-green-500 text-white py-1 px-3 rounded text-sm">Yes, continue tracking</button>
+                            </div>
+                        )}
+                        
                         <div className="flex justify-between items-center">
                             <button onClick={onMinimize} className="py-2 px-4 bg-gray-200 rounded-lg hover:bg-gray-300">Minimize</button>
                             <div>
@@ -387,7 +492,7 @@
                     await window.firebase.deleteDoc(window.firebase.doc(db, "manual_work_reports", id));
                 }
                 setSelectedLogs([]);
-                onRefresh(); // Refresh the log list
+                onRefresh();
             };
 
             const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
