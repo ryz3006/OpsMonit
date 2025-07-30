@@ -144,7 +144,6 @@
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
                 const unsubscribeSettings = window.firebase.onSnapshot(settingsDocRef, (docSnap) => {
                     if (docSnap.exists()) {
-                        // Merge fetched data with defaults to prevent missing fields
                         setSettings({ ...defaultSettings, ...docSnap.data() });
                     } else {
                         window.firebase.setDoc(settingsDocRef, defaultSettings);
@@ -171,13 +170,14 @@
                 try {
                     const docRef = await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
                     console.log("Work log saved with ID: ", docRef.id);
-                    if(logData.isLive) {
-                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.toMillis() });
+                    if (logData.isLive) {
+                        // FIX: Use getTime() for JS Date objects, not toMillis()
+                        setLiveTimer({ ...logData, id: docRef.id, startTime: logData.startTime.getTime() });
                     }
                     setWorkLogModalOpen(false);
                 } catch (error) {
-                    console.error("Error adding work log: ", error);
-                    alert("Failed to save work log.");
+                    console.error("Error processing work log after save: ", error);
+                    alert("Failed to start live timer after saving.");
                 }
             };
 
@@ -381,7 +381,6 @@
             
             const handleSave = async () => {
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
-                // Sanitize data before saving to prevent undefined values
                 const settingsToSave = {
                     projects: localSettings.projects || [],
                     customFields: localSettings.customFields || [],
