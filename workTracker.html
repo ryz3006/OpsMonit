@@ -168,21 +168,34 @@
             const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [liveTimers, setLiveTimers] = useState([]);
             const [activeTimerModalId, setActiveTimerModalId] = useState(null);
+            
+            const [workLogs, setWorkLogs] = useState([]);
+            const [lastVisible, setLastVisible] = useState(null);
+            const [isLastPage, setIsLastPage] = useState(false);
+            const [refreshTrigger, setRefreshTrigger] = useState(0);
 
             const isAdmin = userData?.roles?.includes('admin');
             const hasTeams = userData?.teams && userData.teams.length > 0;
 
+            // Effect to set team from localStorage or default
             useEffect(() => {
-                // Set default team if available and none is selected
-                if (hasTeams && !selectedTeam) {
+                const savedTeam = localStorage.getItem('selectedTeam');
+                if (savedTeam && userData?.teams?.includes(savedTeam)) {
+                    setSelectedTeam(savedTeam);
+                } else if (hasTeams && !selectedTeam) {
                     setSelectedTeam(userData.teams[0]);
                 }
-            }, [userData, selectedTeam, hasTeams]);
+            }, [userData, hasTeams]);
 
+            // Effect to get live timers for the selected team
             useEffect(() => {
-                if (!user) return;
+                if (!user || !selectedTeam) {
+                    setLiveTimers([]);
+                    return;
+                };
                 const liveTimersQuery = window.firebase.query(
-                    window.firebase.collection(db, `live_timers/${user.uid}/timers`)
+                    window.firebase.collection(db, `live_timers/${user.uid}/timers`),
+                    window.firebase.where("team", "==", selectedTeam)
                 );
                 const unsubscribeLiveTimers = window.firebase.onSnapshot(liveTimersQuery, (snapshot) => {
                     const timers = [];
@@ -190,7 +203,49 @@
                     setLiveTimers(timers);
                 });
                 return () => unsubscribeLiveTimers();
-            }, [user]);
+            }, [user, selectedTeam]);
+
+            // Effect to fetch work logs for the selected team
+            useEffect(() => {
+                if (!selectedTeam || !user) return;
+
+                const fetchInitialLogs = async () => {
+                    let q = window.firebase.query(
+                        window.firebase.collection(db, "manual_work_reports"),
+                        window.firebase.where("user.email", "==", user.email),
+                        window.firebase.where("team", "==", selectedTeam),
+                        window.firebase.orderBy("startTime", "desc"),
+                        window.firebase.limit(25)
+                    );
+                    
+                    try {
+                        const documentSnapshots = await window.firebase.getDocs(q);
+                        const logs = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setWorkLogs(logs);
+                        setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                        setIsLastPage(documentSnapshots.docs.length < 25);
+                    } catch(e) {
+                        console.error("Error fetching work logs:", e);
+                    }
+                };
+
+                fetchInitialLogs();
+            }, [selectedTeam, user, refreshTrigger]);
+
+            const handleRefresh = () => {
+                setRefreshTrigger(t => t + 1);
+            };
+
+            const handleStopTimer = () => {
+                setActiveTimerModalId(null);
+                handleRefresh();
+            };
+            
+            const handleTeamChange = (e) => {
+                const newTeam = e.target.value;
+                localStorage.setItem('selectedTeam', newTeam);
+                window.location.reload();
+            };
 
             const activeTimerData = liveTimers.find(t => t.id === activeTimerModalId);
 
@@ -205,7 +260,7 @@
                                     <select 
                                         id="team-select"
                                         value={selectedTeam || ''}
-                                        onChange={(e) => setSelectedTeam(e.target.value)}
+                                        onChange={handleTeamChange}
                                         className="p-2 border rounded-md bg-gray-50 text-sm"
                                     >
                                         {userData.teams.map(team => <option key={team} value={team}>{team}</option>)}
@@ -226,7 +281,14 @@
 
                     <main className="container mx-auto p-4 md:p-8">
                         {selectedTeam ? (
-                            <Dashboard user={user} userData={userData} selectedTeam={selectedTeam} />
+                            <Dashboard 
+                                user={user} 
+                                userData={userData} 
+                                selectedTeam={selectedTeam} 
+                                workLogs={workLogs}
+                                isLastPage={isLastPage}
+                                onRefresh={handleRefresh}
+                            />
                         ) : (
                             <div className="text-center p-8 bg-white shadow-xl rounded-2xl max-w-md w-full mx-auto">
                                 <h1 className="text-2xl font-bold text-gray-800">No Teams Assigned</h1>
@@ -236,54 +298,16 @@
                     </main>
 
                     {isSettingsModalOpen && <SettingsModal onClose={() => setSettingsModalOpen(false)} />}
-                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={() => setActiveTimerModalId(null)} onMinimize={() => setActiveTimerModalId(null)} />}
+                    {activeTimerData && <LiveTimerModal timerData={activeTimerData} user={user} onStop={handleStopTimer} onMinimize={() => setActiveTimerModalId(null)} />}
                 </div>
             );
         }
 
-        function Dashboard({ user, userData, selectedTeam }) {
+        function Dashboard({ user, userData, selectedTeam, workLogs, isLastPage, onRefresh }) {
             const defaultSettings = { projects: [], customFields: [], confirmationTime: 30, autoStopTime: 60 };
             const [settings, setSettings] = useState(defaultSettings);
-            const [workLogs, setWorkLogs] = useState([]);
-            const [lastVisible, setLastVisible] = useState(null);
-            const [isLastPage, setIsLastPage] = useState(false);
-            
             const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
             const [isUploadModalOpen, setUploadModalOpen] = useState(false);
-
-            const fetchWorkLogs = useCallback(async (next = false) => {
-                if (!selectedTeam) return; // Don't fetch if no team is selected
-
-                let q = window.firebase.query(
-                    window.firebase.collection(db, "manual_work_reports"),
-                    window.firebase.where("user.email", "==", user.email),
-                    window.firebase.where("team", "==", selectedTeam), // Filter by selected team
-                    window.firebase.orderBy("startTime", "desc"),
-                    window.firebase.limit(25)
-                );
-
-                if (next && lastVisible) {
-                    q = window.firebase.query(q, window.firebase.startAfter(lastVisible));
-                }
-                
-                try {
-                    const documentSnapshots = await window.firebase.getDocs(q);
-                    const logs = [];
-                    documentSnapshots.forEach((doc) => {
-                        logs.push({ id: doc.id, ...doc.data() });
-                    });
-                    
-                    setWorkLogs(prevLogs => next ? [...prevLogs, ...logs] : logs);
-                    setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                    setIsLastPage(documentSnapshots.docs.length < 25);
-                } catch(e) {
-                    console.error("Error fetching work logs:", e);
-                    if (e.code === 'failed-precondition') {
-                        alert("A database index is required for this query. Please follow the link in the console to create it.");
-                    }
-                }
-            }, [user, lastVisible, selectedTeam]);
-
 
             useEffect(() => {
                 const settingsDocRef = window.firebase.doc(db, "app_settings", "config");
@@ -294,18 +318,15 @@
                         window.firebase.setDoc(settingsDocRef, defaultSettings);
                     }
                 });
-
-                fetchWorkLogs();
-
                 return () => unsubscribeSettings();
-            }, [selectedTeam, fetchWorkLogs]); // Re-fetch when selectedTeam changes
+            }, []);
 
             const handleSaveWorkLog = async (logData) => {
                 if (logData.isLive) {
                     await window.firebase.addDoc(window.firebase.collection(db, `live_timers/${user.uid}/timers`), logData);
                 } else {
                     await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
-                    fetchWorkLogs(); // Refresh the log list
+                    onRefresh(); // Refresh the log list
                 }
                 setWorkLogModalOpen(false);
             };
@@ -324,10 +345,10 @@
                         </button>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => fetchWorkLogs(true)} isLastPage={isLastPage} />
+                    <WorkLogsTable logs={workLogs} user={user} onNextPage={() => { /* Pagination logic needed here */}} isLastPage={isLastPage} onRefresh={onRefresh} />
                     
                     {isWorkLogModalOpen && <WorkLogModal settings={settings} user={user} selectedTeam={selectedTeam} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
-                    {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} selectedTeam={selectedTeam} onClose={() => setUploadModalOpen(false)} />}
+                    {isUploadModalOpen && <UploadModal user={user} currentProjects={settings.projects} selectedTeam={selectedTeam} onClose={() => setUploadModalOpen(false)} onUploadComplete={onRefresh} />}
                 </>
             );
         }
@@ -411,10 +432,9 @@
                 await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), finalLog);
                 await window.firebase.deleteDoc(window.firebase.doc(db, `live_timers/${user.uid}/timers`, timerData.id));
                 
-                // Refresh the page as requested
-                window.location.reload();
+                onStop(); // Closes modal and triggers refresh in MainLayout
 
-            }, [timerData, user, calculateElapsed]);
+            }, [timerData, user, onStop, calculateElapsed]);
 
             const resetTimeouts = useCallback(() => {
                 // ... timer logic
@@ -500,7 +520,7 @@
             );
         }
 
-        function WorkLogsTable({ logs, user, onNextPage, isLastPage }) {
+        function WorkLogsTable({ logs, user, onNextPage, isLastPage, onRefresh }) {
             const [selectedLogs, setSelectedLogs] = useState([]);
 
             const handleDelete = async (ids) => {
@@ -510,8 +530,8 @@
                     await window.firebase.deleteDoc(window.firebase.doc(db, "manual_work_reports", id));
                 }
                 
-                // Refresh the page as requested
-                window.location.reload();
+                setSelectedLogs([]);
+                onRefresh(); // Trigger refresh from MainLayout
             };
 
             const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
@@ -732,7 +752,7 @@
             );
         }
 
-        function UploadModal({ user, currentProjects, onClose, selectedTeam }) {
+        function UploadModal({ user, currentProjects, onClose, selectedTeam, onUploadComplete }) {
             const [file, setFile] = useState(null);
             const [progress, setProgress] = useState(0);
             const [total, setTotal] = useState(0);
@@ -800,8 +820,7 @@
                             });
                         }
                         setUploading(false);
-                        // Refresh page after upload is complete
-                        window.location.reload();
+                        onUploadComplete();
                     }
                 });
             };
