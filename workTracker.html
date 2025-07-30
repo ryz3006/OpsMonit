@@ -12,11 +12,11 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
         import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
         window.firebase = {
             initializeApp,
             getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut,
-            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy
+            getFirestore, doc, getDoc, setDoc, addDoc, collection, query, onSnapshot, orderBy, where, deleteDoc
         };
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -134,6 +134,7 @@
             
             const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
             const [isWorkLogModalOpen, setWorkLogModalOpen] = useState(false);
+            const [isUploadModalOpen, setUploadModalOpen] = useState(false);
             const [workLogModalMode, setWorkLogModalMode] = useState('live');
 
             const [liveTimer, setLiveTimer] = useState(null);
@@ -150,8 +151,12 @@
                     }
                 });
 
-                // Fetch Work Logs
-                const logsQuery = window.firebase.query(window.firebase.collection(db, "manual_work_reports"), window.firebase.orderBy("startTime", "desc"));
+                // Fetch Work Logs for the logged-in user
+                const logsQuery = window.firebase.query(
+                    window.firebase.collection(db, "manual_work_reports"), 
+                    window.firebase.where("user.email", "==", user.email),
+                    window.firebase.orderBy("startTime", "desc")
+                );
                 const unsubscribeLogs = window.firebase.onSnapshot(logsQuery, (querySnapshot) => {
                     const logs = [];
                     querySnapshot.forEach((doc) => {
@@ -187,69 +192,11 @@
                 setLiveTimer(null);
             };
             
-            // FIX: Custom date parser for DD/MM/YYYY format
-            const parseCustomDate = (dateStr, timeStr) => {
-                if (!dateStr || !timeStr) return null;
-                const dateParts = dateStr.split('/'); // Expects [DD, MM, YYYY]
-                const timeParts = timeStr.split(':'); // Expects [HH, MM, SS]
-                if (dateParts.length !== 3 || timeParts.length !== 3) return null;
-
-                const day = parseInt(dateParts[0], 10);
-                const month = parseInt(dateParts[1], 10) - 1; // JS months are 0-indexed
-                const year = parseInt(dateParts[2], 10);
-                const hours = parseInt(timeParts[0], 10);
-                const minutes = parseInt(timeParts[1], 10);
-                const seconds = parseInt(timeParts[2], 10);
-
-                const date = new Date(year, month, day, hours, minutes, seconds);
-                // Check if the constructed date is valid
-                if (isNaN(date.getTime())) {
-                    return null;
-                }
-                return date;
-            };
-
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
-
-                Papa.parse(file, {
-                    header: true,
-                    skipEmptyLines: true,
-                    complete: async (results) => {
-                        const records = results.data;
-                        let invalidCount = 0;
-                        alert(`Found ${records.length} records. Uploading to Firestore...`);
-                        
-                        for (const record of records) {
-                            const startTime = parseCustomDate(record['Start Date'], record['Start Time']);
-                            const endTime = parseCustomDate(record['End Date'], record['End Time']);
-
-                            if (!startTime || !endTime) {
-                                console.warn('Skipping invalid record due to date format issue:', record);
-                                invalidCount++;
-                                continue; // Skip this record
-                            }
-
-                            const logData = {
-                                project: record.Project || 'N/A',
-                                ticketLink: record.Task || 'N/A',
-                                description: record.Description || '',
-                                startTime: startTime,
-                                endTime: endTime,
-                                user: { uid: user.uid, name: user.displayName, email: user.email },
-                                isLive: false,
-                            };
-                            await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
-                        }
-                        alert(`Upload complete! ${records.length - invalidCount} records were imported. ${invalidCount} invalid records were skipped.`);
-                    },
-                    error: (error) => {
-                        alert('Error parsing CSV file.');
-                        console.error(error);
-                    }
-                });
-                event.target.value = null;
+                setUploadModalOpen(true);
+                event.target.value = null; // Reset file input
             };
 
             return (
@@ -286,10 +233,11 @@
                         </label>
                     </div>
 
-                    <WorkLogsTable logs={workLogs} />
+                    <WorkLogsTable logs={workLogs} user={user} />
                     
                     {isSettingsModalOpen && <SettingsModal settings={settings} onClose={() => setSettingsModalOpen(false)} />}
                     {isWorkLogModalOpen && <WorkLogModal mode={workLogModalMode} settings={settings} user={user} onSave={handleSaveWorkLog} onClose={() => setWorkLogModalOpen(false)} />}
+                    {isUploadModalOpen && <UploadModal file={event.target.files[0]} user={user} onClose={() => setUploadModalOpen(false)} />}
                 </div>
             );
         }
@@ -366,7 +314,32 @@
             );
         }
 
-        function WorkLogsTable({ logs }) {
+        function WorkLogsTable({ logs, user }) {
+            const [selectedLogs, setSelectedLogs] = useState([]);
+
+            const handleSelectAll = (e) => {
+                if (e.target.checked) {
+                    setSelectedLogs(logs.map(log => log.id));
+                } else {
+                    setSelectedLogs([]);
+                }
+            };
+
+            const handleSelectOne = (id) => {
+                setSelectedLogs(prev => 
+                    prev.includes(id) ? prev.filter(logId => logId !== id) : [...prev, id]
+                );
+            };
+
+            const handleDelete = async (ids) => {
+                if (!window.confirm(`Are you sure you want to delete ${ids.length} log(s)?`)) return;
+                
+                for (const id of ids) {
+                    await window.firebase.deleteDoc(window.firebase.doc(db, "manual_work_reports", id));
+                }
+                setSelectedLogs([]);
+            };
+
             const formatTime = (timestamp) => timestamp ? new Date(timestamp.seconds * 1000).toLocaleString() : 'N/A';
             const formatDuration = (start, end) => {
                 if (!start || !end) return 'In Progress';
@@ -378,26 +351,39 @@
 
             return (
                 <div className="bg-white p-4 rounded-lg shadow-md">
-                    <h2 className="text-2xl font-bold mb-4 text-gray-700">Work Logs</h2>
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-2xl font-bold text-gray-700">My Work Logs</h2>
+                        {selectedLogs.length > 0 && (
+                            <button onClick={() => handleDelete(selectedLogs)} className="bg-red-500 text-white py-2 px-4 rounded-lg hover:bg-red-600 transition">
+                                <i className="fas fa-trash-alt mr-2"></i>Delete Selected ({selectedLogs.length})
+                            </button>
+                        )}
+                    </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left">
                             <thead>
                                 <tr className="bg-gray-50 border-b">
+                                    <th className="p-3 w-4"><input type="checkbox" onChange={handleSelectAll} checked={selectedLogs.length === logs.length && logs.length > 0} /></th>
                                     <th className="p-3">Project</th>
                                     <th className="p-3">Ticket/Task</th>
                                     <th className="p-3">Start Time</th>
                                     <th className="p-3">End Time</th>
                                     <th className="p-3">Duration</th>
+                                    <th className="p-3">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {logs.map(log => (
-                                    <tr key={log.id} className="border-b hover:bg-gray-50">
+                                    <tr key={log.id} className={`border-b ${selectedLogs.includes(log.id) ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                                        <td className="p-3"><input type="checkbox" checked={selectedLogs.includes(log.id)} onChange={() => handleSelectOne(log.id)} /></td>
                                         <td className="p-3 font-medium">{log.project}</td>
                                         <td className="p-3">{log.ticketLink}</td>
                                         <td className="p-3">{formatTime(log.startTime)}</td>
                                         <td className="p-3">{formatTime(log.endTime)}</td>
                                         <td className="p-3 font-mono">{formatDuration(log.startTime, log.endTime)}</td>
+                                        <td className="p-3">
+                                            <button onClick={() => handleDelete([log.id])} className="text-gray-400 hover:text-red-500"><i className="fas fa-trash"></i></button>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -589,6 +575,101 @@
                             </button>
                         </div>
                     </form>
+                </div>
+            );
+        }
+
+        function UploadModal({ file, user, onClose }) {
+            const [progress, setProgress] = useState(0);
+            const [total, setTotal] = useState(0);
+            const [isUploading, setUploading] = useState(false);
+            const [isCancelled, setCancelled] = useState(false);
+
+            useEffect(() => {
+                if (file) {
+                    handleUpload();
+                }
+            }, [file]);
+
+            const parseCustomDate = (dateStr, timeStr) => {
+                if (!dateStr || !timeStr) return null;
+                const dateParts = dateStr.split('/');
+                const timeParts = timeStr.split(':');
+                if (dateParts.length !== 3 || timeParts.length !== 3) return null;
+                const date = new Date(dateParts[2], dateParts[1] - 1, dateParts[0], timeParts[0], timeParts[1], timeParts[2]);
+                return isNaN(date.getTime()) ? null : date;
+            };
+
+            const handleUpload = () => {
+                setUploading(true);
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: async (results) => {
+                        const records = results.data;
+                        setTotal(records.length);
+                        let uploadedCount = 0;
+
+                        for (let i = 0; i < records.length; i++) {
+                            if (isCancelled) {
+                                console.log("Upload cancelled by user.");
+                                break;
+                            }
+                            const record = records[i];
+                            const startTime = parseCustomDate(record['Start Date'], record['Start Time']);
+                            const endTime = parseCustomDate(record['End Date'], record['End Time']);
+
+                            if (startTime && endTime && record.Email) {
+                                const logData = {
+                                    project: record.Project || 'N/A',
+                                    ticketLink: record.Task || 'N/A',
+                                    description: record.Description || '',
+                                    startTime: startTime,
+                                    endTime: endTime,
+                                    user: { email: record.Email }, // Assign work to the email from CSV
+                                    uploader: { name: user.displayName, email: user.email }, // Track who uploaded
+                                    isLive: false,
+                                };
+                                await window.firebase.addDoc(window.firebase.collection(db, "manual_work_reports"), logData);
+                            }
+                            uploadedCount++;
+                            setProgress(uploadedCount);
+                        }
+                        setUploading(false);
+                    }
+                });
+            };
+
+            const handleCancel = () => {
+                setCancelled(true);
+                setUploading(false);
+                onClose();
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 modal-active">
+                    <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-lg">
+                        <h2 className="text-2xl font-bold mb-4">Uploading CSV...</h2>
+                        {isUploading ? (
+                            <div>
+                                <p className="mb-2 text-gray-600">Processing record {progress} of {total}</p>
+                                <div className="w-full bg-gray-200 rounded-full h-4">
+                                    <div className="bg-blue-600 h-4 rounded-full" style={{ width: `${(progress / total) * 100}%` }}></div>
+                                </div>
+                                <div className="text-center mt-4">
+                                    <button onClick={handleCancel} className="py-2 px-6 bg-red-500 text-white rounded-lg hover:bg-red-600">Cancel</button>
+                                </div>
+                            </div>
+                        ) : (
+                             <div>
+                                <p className="text-lg text-green-600 font-semibold mb-4">Upload complete!</p>
+                                <p>{progress} records processed.</p>
+                                <div className="text-center mt-4">
+                                    <button onClick={onClose} className="py-2 px-6 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Close</button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             );
         }
